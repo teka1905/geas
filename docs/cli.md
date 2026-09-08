@@ -71,6 +71,11 @@ openapi-contracts add KEY --source SOURCE
 
 Добавляет операцию в allowlist manifest.
 
+По `operationId` (либо явной паре method + path) команда находит операцию и
+записывает полный binding: `operation_id`, method, path, request content type,
+успешный response-вариант и Python path из стабильного ключа. Единственный
+вариант выбирается автоматически; неоднозначность требует явного селектора.
+
 **Команда транзакционна.** Операция полностью нормализуется и рендерится во
 временный каталог **до того**, как manifest будет тронут. Если конструкция не
 поддержана, команда завершается ненулевым кодом, а manifest остаётся
@@ -87,8 +92,8 @@ openapi-contracts add KEY --source SOURCE
 | --- | --- |
 | `--operation-id` | основной способ найти операцию |
 | `--method` + `--path` | если `operationId` в спецификации нет |
-| `--request-content-type` | если у операции несколько тел запроса |
-| `--response 200:application/json` | закрепить конкретные варианты ответа |
+| `--request-content-type` | если у операции несколько JSON-тел запроса |
+| `--response 200:application/json` | если успешных response-вариантов несколько |
 | `--python-path ws2.add_ticket` | если автоматическое имя невалидно или конфликтует |
 | `--no-d42` | не генерировать d42-схемы для этой операции |
 
