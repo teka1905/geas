@@ -23,7 +23,7 @@ classifiers = [
     "Private :: Do Not Upload",
 ]
 dependencies = [
-    "jsonschema[format]>=4,<5",
+    "jsonschema[format-nongpl]>=4,<5",
     "PyYAML>=6,<7",
 ]
 

@@ -42,13 +42,14 @@ OpenAPI 3.1 — не надмножество 3.0: в нём удалён `nulla
 | `required` | поддержано | обязательные ключи |
 | `additionalProperties: false` | поддержано | «закрытый» dict |
 | `additionalProperties: true` / отсутствует | поддержано | открытый dict (`...: ...`) |
-| `additionalProperties: <схема>` | поддержано | **не выразимо**, d42 отключается точечно |
+| `additionalProperties: <схема>` | поддержано | точный `TypedDictSchema`; `fake()` не выдумывает динамические ключи |
 | `items` | поддержано | `schema.list` |
 | `minItems` / `maxItems` | поддержано | `.len(min, max)` |
 | `uniqueItems` | поддержано | `.unique()` |
 | `minLength` / `maxLength` | поддержано | `.len(min, max)` |
 | `pattern` | поддержано | `.regex(...)`; вместе с границами длины — не выразимо |
 | `minimum` / `maximum` | поддержано | `.min()` / `.max()` |
+| `format: int32` / `int64` | явные знаковые границы 32/64 бит | `.min()` / `.max()` с теми же границами |
 | `exclusiveMinimum` / `exclusiveMaximum` (булевы, 3.0) | поддержано, разворачиваются в числовые | для `integer` точно (`±1`); для `number` — не выразимо |
 | `exclusiveMinimum` / `exclusiveMaximum` (числовые) | отклоняется (это 3.1) | — |
 | `multipleOf` | поддержано | не выразимо |
@@ -86,7 +87,7 @@ d42 и JSON Schema. Отключить JSON-Schema-путь нельзя.
 ### Про невыразимые в d42 конструкции
 
 Если конструкция точна в контракте и в JSON Schema, но не выразима в d42
-(типизированный `additionalProperties`, несливаемый `allOf`, `multipleOf`,
+(несливаемый `allOf`, `multipleOf`,
 `minProperties`, рекурсия, `pattern` вместе с границами длины), библиотека
 **не роняет операцию**. Она:
 
@@ -116,7 +117,9 @@ d42 и JSON Schema. Отключить JSON-Schema-путь нельзя.
 * `policies.unknown_formats: annotate` в manifest — для всего проекта;
 * waiver с правилом `allow_unknown_format` — точечно.
 
-`format: binary` и `format: byte` относятся к словарю OpenAPI, а не JSON Schema,
+`int32` и `int64` превращаются в явные знаковые границы, потому что JSON Schema
+сама не считает их ограничениями диапазона. `format: binary` и `format: byte`
+относятся к словарю OpenAPI, а не JSON Schema,
 поэтому попадают в артефакт, но валидацию не выполняют.
 
 ## Параметры

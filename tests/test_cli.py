@@ -29,8 +29,8 @@ _SOURCES: dict[str, tuple[str, tuple[str, ...]]] = {
     "multi": ("api/multi.yaml", ("features", "multi_content_types.yaml")),
 }
 
-# Операции basic/ идут с ``d42: false``: DocumentBase.labels — типизированный
-# additionalProperties, который d42 выразить не умеет. CLI это не проверяет.
+# Операции basic/ идут с ``d42: false`` намеренно: эти тесты проверяют CLI core,
+# а d42-рендер имеет собственный набор проверок.
 _LIST = {"source": "main", "operation_id": "listDocuments", "d42": False}
 _CREATE = {"source": "main", "operation_id": "createDocument", "d42": False}
 _REPLACE = {"source": "multi", "operation_id": "replaceDocumentContent"}

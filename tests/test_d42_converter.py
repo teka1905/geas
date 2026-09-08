@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
-from d42 import optional, schema
+from d42 import ValidationException, optional, schema, validate_or_fail
 
 from openapi_contracts.errors import (
     ContractError,
@@ -82,6 +82,20 @@ def union(*variants: SchemaNode, kind: UnionKind = UnionKind.ONE_OF, nullable: b
 
 def test_plain_string_has_no_constraints() -> None:
     assert to_d42(StringNode(origin=ORIGIN), {}) == schema.str
+
+
+@pytest.mark.parametrize(
+    ("format_name", "minimum", "maximum"),
+    [
+        ("int32", -(2**31), 2**31 - 1),
+        ("int64", -(2**63), 2**63 - 1),
+    ],
+)
+def test_integer_formats_have_real_d42_bounds(format_name: str, minimum: int, maximum: int) -> None:
+    """int32/int64 — ограничения диапазона, а не декоративный format."""
+    converted = to_d42(IntegerNode(origin=ORIGIN, format=format_name), {})
+
+    assert converted == schema.int.min(minimum).max(maximum)
 
 
 @pytest.mark.parametrize(
@@ -471,13 +485,36 @@ def test_property_count_bounds_fail_closed(field: str, keyword: str) -> None:
     assert keyword in str(info.value)
 
 
-def test_typed_additional_properties_fails_closed() -> None:
-    """``schema.dict`` умеет только «открыт»/«закрыт», схемы для лишних ключей нет."""
-    node = ObjectNode(origin=ORIGIN, additional_properties=StringNode(origin=ORIGIN))
-    with pytest.raises(UnsupportedConstructError) as info:
-        to_d42(node, {})
+def test_typed_additional_properties_are_validated_exactly() -> None:
+    """Значения динамических ключей проверяются схемой из additionalProperties."""
+    node = ObjectNode(
+        origin=ORIGIN,
+        properties=(prop("fixed", IntegerNode(origin=ORIGIN)),),
+        additional_properties=StringNode(origin=ORIGIN),
+    )
+    converted = to_d42(node, {})
 
-    assert "additionalProperties" in str(info.value)
+    validate_or_fail(converted, {"fixed": 1, "dynamic": "ok"})
+    with pytest.raises(ValidationException):
+        validate_or_fail(converted, {"fixed": 1, "dynamic": 42})
+
+
+def test_typed_additional_properties_support_fake_substitution_and_make_required() -> None:
+    """Custom d42-тип сохраняет привычный API схем словаря."""
+    from d42 import fake
+    from d42.utils import make_required
+
+    node = ObjectNode(
+        origin=ORIGIN,
+        properties=(prop("fixed", IntegerNode(origin=ORIGIN), required=False),),
+        additional_properties=StringNode(origin=ORIGIN),
+    )
+    converted = to_d42(node, {})
+    required = make_required(converted, keys={"fixed"})
+    substituted = required % {"fixed": 7, "dynamic": "value"}
+
+    assert fake(substituted) == {"fixed": 7, "dynamic": "value"}
+    validate_or_fail(required, {"fixed": 7, "dynamic": "value"})
 
 
 def test_self_recursive_definition_is_rejected() -> None:

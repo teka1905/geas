@@ -61,8 +61,24 @@ def test_wheel_contains_py_typed(distributions: tuple[Path, Path]) -> None:
         names = archive.namelist()
 
     assert "openapi_contracts/py.typed" in names
+    assert "openapi_contracts/__main__.py" in names
     assert "openapi_contracts/integrations/d42/converter.py" in names
     assert "openapi_contracts/integrations/jj/contract_mock.py" in names
+
+
+def test_core_uses_non_gpl_jsonschema_format_extra(
+    distributions: tuple[Path, Path],
+) -> None:
+    """Установка core не должна транзитивно приносить GPL-пакет rfc3987."""
+    wheel, _ = distributions
+    with zipfile.ZipFile(wheel) as archive:
+        metadata_name = next(
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        )
+        metadata = archive.read(metadata_name).decode("utf-8")
+
+    assert "Requires-Dist: jsonschema[format-nongpl]" in metadata
+    assert "Requires-Dist: jsonschema[format]" not in metadata
 
 
 def test_package_metadata_passes_twine(distributions: tuple[Path, Path]) -> None:
@@ -126,6 +142,10 @@ def test_wheel_installs_into_a_clean_environment(
     version_result = _run(str(cli), "--version")
     assert version_result.returncode == 0
     assert _declared_version() in version_result.stdout
+
+    module_help = _run(str(python), "-m", "openapi_contracts", "--help")
+    assert module_help.returncode == 0, module_help.stderr
+    assert "openapi-contracts" in module_help.stdout
 
 
 def test_missing_extra_error_names_the_install_command(

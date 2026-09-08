@@ -26,6 +26,7 @@ from typing import Any
 import yaml
 
 from .errors import ContractError, WaiverError
+from .fingerprints import ANNOTATION_KEYS, digest, semantic_source_digest, strip_annotations
 from .manifest import Manifest, NonWaivableAssertion
 from .models import Direction
 from .paths import ContractPath, format_contract_path, parse_contract_path
@@ -37,6 +38,7 @@ __all__ = [
     "WaiverSet",
     "empty_waivers_document",
     "load_waivers",
+    "waiver_source_digest",
 ]
 
 #: Версия формата файла waivers.
@@ -54,8 +56,35 @@ class WaiverRule(str, Enum):
     REPLACE_SCHEMA = "replace_schema"
     #: Сделать поле необязательным, хотя спецификация объявляет его required.
     RELAX_REQUIRED = "relax_required"
+    #: Не исключать ошибочно помеченное ``readOnly``-поле из запроса.
+    IGNORE_READ_ONLY = "ignore_read_only"
+    #: Не исключать ошибочно помеченное ``writeOnly``-поле из ответа.
+    IGNORE_WRITE_ONLY = "ignore_write_only"
+    #: Разрешить ``null`` в точке, где источник забыл nullable-маркер.
+    ALLOW_NULL = "allow_null"
+    #: Не применять ошибочный ``discriminator`` в выбранной операции.
+    IGNORE_DISCRIMINATOR = "ignore_discriminator"
+    #: Дополнить неполный enum явно перечисленными литералами.
+    EXTEND_ENUM = "extend_enum"
+    #: Добавить отсутствующее в исходной объектной схеме необязательное свойство.
+    ADD_PROPERTY = "add_property"
     #: Разрешить неподдержанную сериализацию параметра (значение не проверяется).
     ALLOW_UNSUPPORTED_SERIALIZATION = "allow_unsupported_serialization"
+
+
+_EXCLUSIVE_RULES = frozenset(
+    {WaiverRule.ALLOW_ANY, WaiverRule.REPLACE_SCHEMA, WaiverRule.ADD_PROPERTY}
+)
+
+
+def waiver_source_digest(fragment: Any, rule: WaiverRule | str) -> str:
+    """Посчитать ``expected_source`` с учётом семантики конкретного правила."""
+    parsed = WaiverRule(rule)
+    if parsed is WaiverRule.IGNORE_READ_ONLY:
+        return digest(strip_annotations(fragment, keys=ANNOTATION_KEYS - {"readOnly"}))
+    if parsed is WaiverRule.IGNORE_WRITE_ONLY:
+        return digest(strip_annotations(fragment, keys=ANNOTATION_KEYS - {"writeOnly"}))
+    return semantic_source_digest(fragment)
 
 
 _REQUIRED_FIELDS = (
@@ -74,6 +103,7 @@ _ALLOWED_FIELDS = frozenset(
         "ticket",
         "expected_source",
         "replacement",
+        "values",
         "status",
         "content_type",
     }
@@ -118,6 +148,8 @@ class Waiver:
     expected_source: str
     #: Явная замена схемы — только для :attr:`WaiverRule.REPLACE_SCHEMA`.
     replacement: Any = None
+    #: Литералы для :attr:`WaiverRule.EXTEND_ENUM`.
+    values: tuple[Any, ...] = ()
     #: Сужение до конкретного статуса ответа. ``None`` — все варианты направления.
     status: int | str | None = None
     #: Сужение до конкретного content type. ``None`` — все варианты направления.
@@ -192,10 +224,24 @@ class Waiver:
             )
 
         replacement = data.get("replacement")
-        if rule is WaiverRule.REPLACE_SCHEMA and replacement is None:
-            raise WaiverError(f"{where}: правило replace_schema требует поля 'replacement'")
-        if rule is not WaiverRule.REPLACE_SCHEMA and replacement is not None:
-            raise WaiverError(f"{where}: поле 'replacement' допустимо только для replace_schema")
+        replacement_rules = {WaiverRule.REPLACE_SCHEMA, WaiverRule.ADD_PROPERTY}
+        if rule in replacement_rules and replacement is None:
+            raise WaiverError(f"{where}: правило {rule.value} требует поля 'replacement'")
+        if rule not in replacement_rules and replacement is not None:
+            allowed_rules = ", ".join(sorted(item.value for item in replacement_rules))
+            raise WaiverError(
+                f"{where}: поле 'replacement' допустимо только для правил {allowed_rules}"
+            )
+
+        raw_values = data.get("values")
+        if rule is WaiverRule.EXTEND_ENUM:
+            if not isinstance(raw_values, list) or not raw_values:
+                raise WaiverError(f"{where}: правило extend_enum требует непустого списка 'values'")
+            values = tuple(raw_values)
+        else:
+            if raw_values is not None:
+                raise WaiverError(f"{where}: поле 'values' допустимо только для extend_enum")
+            values = ()
 
         for name in ("reason", "owner", "operation"):
             if not isinstance(data[name], str):
@@ -227,6 +273,7 @@ class Waiver:
             expires_at=_parse_expiry(data["expires_at"], where),
             expected_source=expected_source,
             replacement=replacement,
+            values=values,
             status=status,
             content_type=content_type,
         )
@@ -245,6 +292,8 @@ class Waiver:
         }
         if self.replacement is not None:
             data["replacement"] = self.replacement
+        if self.values:
+            data["values"] = list(self.values)
         if self.status is not None:
             data["status"] = self.status
         if self.content_type is not None:
@@ -270,19 +319,29 @@ class WaiverSet:
     def __post_init__(self) -> None:
         index: dict[tuple[str, Direction, ContractPath, WaiverRule], list[Waiver]] = {}
         identities: set[tuple[Any, ...]] = set()
-        by_scope: dict[tuple[Any, ...], Waiver] = {}
+        by_scope: dict[tuple[Any, ...], list[Waiver]] = {}
         for waiver in self.waivers:
             if waiver.identity in identities:
                 raise WaiverError(f"избыточный waiver: {waiver.describe()} объявлен дважды")
-            if waiver.scope in by_scope:
-                other = by_scope[waiver.scope]
+            others = by_scope.get(waiver.scope, [])
+            conflict = next(
+                (
+                    other
+                    for other in others
+                    if other.rule in _EXCLUSIVE_RULES or waiver.rule in _EXCLUSIVE_RULES
+                ),
+                None,
+            )
+            if conflict is not None:
                 raise WaiverError(
-                    f"на одну точку контракта навешено два правила: {other.rule.value} и "
+                    f"на одну точку контракта навешены несовместимые правила: "
+                    f"{conflict.rule.value} и "
                     f"{waiver.rule.value} для {format_contract_path(waiver.path)}. "
-                    f"Порядок применения был бы неопределённым — оставьте одно правило"
+                    f"Замена или снятие всего ограничения должны оставаться единственным "
+                    f"правилом в этой точке"
                 )
             identities.add(waiver.identity)
-            by_scope[waiver.scope] = waiver
+            by_scope.setdefault(waiver.scope, []).append(waiver)
             index.setdefault(
                 (waiver.operation, waiver.direction, waiver.path, waiver.rule), []
             ).append(waiver)

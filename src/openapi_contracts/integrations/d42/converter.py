@@ -54,8 +54,9 @@ Fail closed (список полный)
 * ``pattern`` вместе с ``minLength``/``maxLength`` — в d42 ``regex()`` и ``len()``
   взаимоисключающи (``DeclarationError: already declared``);
 * ``minProperties`` / ``maxProperties`` — у ``DictSchema`` таких свойств нет;
-* типизированный ``additionalProperties`` — ``schema.dict`` умеет только «открыт /
-  закрыт», без схемы для лишних ключей;
+* типизированный ``additionalProperties`` выражается через
+  :class:`~openapi_contracts.integrations.d42.typed_dict.TypedDictSchema`: обычный
+  d42 ``schema.dict`` не умеет проверять значения динамических ключей;
 * рекурсивные ``$ref`` — d42-схема строится «по значению», рекурсия развернулась бы
   бесконечно (:class:`~openapi_contracts.errors.RecursiveSchemaError`);
 * ``enum``, чьи литералы противоречат соседним ограничениям (``pattern``, границам,
@@ -84,6 +85,7 @@ from openapi_contracts.errors import (
     ValidationFailedError,
 )
 from openapi_contracts.models import (
+    INTEGER_FORMAT_BOUNDS,
     AdditionalProperties,
     AllOfNode,
     AnyNode,
@@ -99,7 +101,15 @@ from openapi_contracts.models import (
     StringNode,
     UnionNode,
 )
-from openapi_contracts.paths import ARRAY_ITEMS, ContractPath, format_contract_path, variant_segment
+from openapi_contracts.paths import (
+    ADDITIONAL_PROPERTIES,
+    ARRAY_ITEMS,
+    ContractPath,
+    format_contract_path,
+    variant_segment,
+)
+
+from .typed_dict import typed_dict
 
 __all__ = ["to_d42"]
 
@@ -142,6 +152,7 @@ class _DictPlan:
 
     entries: tuple[tuple[str, _Plan, bool], ...]
     open: bool
+    additional: _Plan | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +232,8 @@ def referenced_names(plan: _Plan) -> set[str]:
         names: set[str] = set()
         for _, sub, _ in plan.entries:
             names |= referenced_names(sub)
+        if plan.additional is not None:
+            names |= referenced_names(plan.additional)
         return names
     if isinstance(plan, _ListPlan):
         return referenced_names(plan.items)
@@ -354,6 +367,10 @@ def _plan_string(node: StringNode, path: ContractPath, definition: str | None) -
 def _plan_integer(node: IntegerNode, path: ContractPath, definition: str | None) -> _Plan:
     minimum = _tighter(node.minimum, _shift(node.exclusive_minimum, +1), max)
     maximum = _tighter(node.maximum, _shift(node.exclusive_maximum, -1), min)
+    if node.format in INTEGER_FORMAT_BOUNDS:
+        format_minimum, format_maximum = INTEGER_FORMAT_BOUNDS[node.format]
+        minimum = _tighter(minimum, format_minimum, max)
+        maximum = _tighter(maximum, format_maximum, min)
 
     if node.enum is not None:
         _require_enum(node, node.enum, path, definition)
@@ -449,16 +466,6 @@ def _plan_object(
                 path,
                 definition,
             )
-    if isinstance(node.additional_properties, SchemaNode):
-        raise _error(
-            UnsupportedConstructError,
-            "типизированный additionalProperties не выражается в d42: schema.dict "
-            "умеет только «открыт»/«закрыт», без схемы для лишних ключей",
-            node,
-            path,
-            definition,
-        )
-
     seen: set[str] = set()
     entries: list[tuple[str, _Plan, bool]] = []
     for prop in sorted(node.properties, key=lambda item: item.name):
@@ -481,6 +488,16 @@ def _plan_object(
     return _DictPlan(
         entries=tuple(entries),
         open=node.additional_properties is AdditionalProperties.ALLOWED,
+        additional=(
+            plan_node(
+                node.additional_properties,
+                definitions,
+                path=(*path, ADDITIONAL_PROPERTIES),
+                definition=definition,
+            )
+            if isinstance(node.additional_properties, SchemaNode)
+            else None
+        ),
     )
 
 
@@ -703,6 +720,8 @@ def build(plan: _Plan, built: Mapping[str, GenericSchema]) -> GenericSchema:
         keys: dict[Any, Any] = {}
         for name, sub, is_optional in plan.entries:
             keys[optional(name) if is_optional else name] = build(sub, built)
+        if plan.additional is not None:
+            return typed_dict(schema.dict(keys), additional=build(plan.additional, built))
         if plan.open:
             keys[...] = ...
         return schema.dict(keys)

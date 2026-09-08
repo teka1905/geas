@@ -54,6 +54,7 @@ wheel-smoke: build ## Проверить собранный wheel в однор�
 	$(WHEEL_VENV)/bin/python -m pip install --quiet dist/*.whl
 	$(WHEEL_VENV)/bin/python -c 'import openapi_contracts'
 	$(WHEEL_VENV)/bin/openapi-contracts --help > /dev/null
+	$(WHEEL_VENV)/bin/python -m openapi_contracts --help > /dev/null
 	@$(WHEEL_VENV)/bin/python -c 'from importlib.metadata import version; print(version("$(PKG)"))'
 	rm -rf $(WHEEL_VENV)
 

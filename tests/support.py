@@ -171,7 +171,7 @@ class Project:
         if env:
             environment.update(env)
         return subprocess.run(
-            [sys.executable, "-m", "openapi_contracts.cli", "-m", str(self.manifest_path), *args],
+            [sys.executable, "-m", "openapi_contracts", "-m", str(self.manifest_path), *args],
             capture_output=True,
             text=True,
             cwd=self.root,

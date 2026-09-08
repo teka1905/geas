@@ -43,6 +43,14 @@ checked-in OpenAPI-спецификаций.
   `list` (операции источника), `add` и `update` (добавление и перегенерация
   выбранных операций), `check` (проверка, что закоммиченные артефакты
   совпадают с генерацией) и `diff` (человекочитаемое расхождение контракта).
+- **Точный d42-тип для `additionalProperties: <schema>`**, совместимый с
+  `fake()`, `%`, `make_required()` и generator overlays.
+- **Waiver'ы для дефектных generated-моделей запросов**: direction-маркеры,
+  nullable, discriminator, неполный enum и отсутствующие свойства.
+- **Реальные диапазоны `int32`/`int64`** в JSON Schema и d42 вместо
+  декоративного `format` без проверки границ.
+- **Безопасный dependency extra `jsonschema[format-nongpl]`** и модульная точка
+  входа `python -m openapi_contracts`.
 
 ### Ограничения
 
