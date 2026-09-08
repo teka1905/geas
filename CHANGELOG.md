@@ -54,6 +54,9 @@ checked-in OpenAPI-спецификаций.
 - **Совместимая с JJ история в виде `list`** и необязательный
   `history_callback` для интеграции с отчётами потребителя без зависимости от
   конкретного test framework.
+- **Полный binding в `add`**: CLI автоматически закрепляет method, полный path,
+  единственные request/response media types и generated Python path; при
+  неоднозначности требует явный селектор вместо неполной записи в manifest.
 
 ### Ограничения
 

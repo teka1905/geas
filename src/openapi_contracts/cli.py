@@ -51,6 +51,7 @@ from .manifest import (
     dump_manifest,
     load_manifest,
 )
+from .naming import python_path_from_key
 from .normalization.refs import SpecRegistry
 from .semantic_diff import diff_operations
 from .waivers import empty_waivers_document, load_waivers
@@ -313,11 +314,16 @@ def _cmd_add(args: argparse.Namespace) -> int:
     if args.no_d42:
         entry["d42"] = False
 
+    entry = _complete_add_entry(args, manifest_path=manifest_path, entry=entry)
+
     operations = dict(document.get("operations") or {})
-    if operations.get(args.key) == entry:
+    current_entry = operations.get(args.key)
+    if isinstance(current_entry, dict) and _operation_binding_matches(
+        current=current_entry, proposed=entry
+    ):
         print(f"операция {args.key} уже добавлена с теми же параметрами — ничего не меняю")
         return EXIT_OK
-    if args.key in operations:
+    if current_entry is not None:
         print(
             f"операция {args.key} уже есть в manifest, но с другими параметрами.\n"
             f"  сейчас:    {json.dumps(operations[args.key], ensure_ascii=False, sort_keys=True)}\n"
@@ -346,6 +352,91 @@ def _cmd_add(args: argparse.Namespace) -> int:
     print(f"операция {args.key} добавлена в {manifest_path}")
     print("Теперь запустите 'openapi-contracts update', чтобы обновить артефакты")
     return EXIT_OK
+
+
+def _operation_binding_matches(*, current: dict[str, Any], proposed: dict[str, Any]) -> bool:
+    """Сравнить binding, не отбрасывая дополнительные политики текущей записи."""
+    return all(current.get(key) == value for key, value in proposed.items())
+
+
+def _complete_add_entry(
+    args: argparse.Namespace, *, manifest_path: Path, entry: dict[str, Any]
+) -> dict[str, Any]:
+    """Дополнить запись стабильным binding, выведенным из выбранной операции."""
+    manifest = load_manifest(manifest_path)
+    report = _inspect(manifest, only=args.source)
+    if not report["sources"]:
+        raise _UsageError(f"в manifest нет источника {args.source!r}")
+
+    operations = report["sources"][0]["operations"]
+    candidates = [
+        operation
+        for operation in operations
+        if (not args.operation_id or operation["operation_id"] == args.operation_id)
+        and (not args.method or operation["method"] == args.method.upper())
+        and (not args.path or operation["path"] == args.path)
+    ]
+    if not candidates:
+        raise _UsageError(
+            f"в источнике {args.source!r} нет операции с переданным operationId/method/path"
+        )
+    if len(candidates) > 1:
+        routes = ", ".join(f"{item['method']} {item['path']}" for item in candidates)
+        raise _UsageError(f"операция выбрана неоднозначно ({routes}); передайте --method и --path")
+
+    operation = candidates[0]
+    completed = dict(entry)
+    if operation["operation_id"]:
+        completed["operation_id"] = operation["operation_id"]
+    completed["method"] = operation["method"]
+    completed["path"] = operation["path"]
+
+    request_types = operation["request_content_types"]
+    if args.request_content_type:
+        if args.request_content_type not in request_types:
+            raise _UsageError(
+                f"request content type {args.request_content_type!r} не объявлен операцией; "
+                f"доступны: {request_types or '<нет тела>'}"
+            )
+    elif len(request_types) == 1:
+        completed["request"] = {"content_type": request_types[0]}
+    elif len(request_types) > 1:
+        raise _UsageError(
+            "у операции несколько JSON request content types; передайте --request-content-type"
+        )
+
+    if not args.response:
+        response_variants = [_response_from_report(item) for item in operation["responses"]]
+        successful = [
+            item
+            for item in response_variants
+            if isinstance(item["status"], int) and 200 <= item["status"] < 300
+        ]
+        selectable = successful or response_variants
+        if len(selectable) == 1:
+            completed["responses"] = selectable
+        elif len(selectable) > 1:
+            variants = ", ".join(operation["responses"])
+            raise _UsageError(
+                f"у операции несколько вариантов ответа ({variants}); передайте --response"
+            )
+        else:
+            raise _UsageError("у операции нет поддерживаемого варианта ответа")
+
+    if not args.python_path:
+        completed["python_path"] = list(python_path_from_key(args.key))
+    return completed
+
+
+def _response_from_report(raw: str) -> dict[str, Any]:
+    """Преобразовать вариант из ``list --json`` обратно в manifest selector."""
+    status, _, content_type = raw.partition(":")
+    selector: dict[str, Any] = {
+        "status": "default" if status == "default" else int(status),
+    }
+    if content_type != "-":
+        selector["content_type"] = content_type
+    return selector
 
 
 def _parse_response_selector(raw: str) -> dict[str, Any]:

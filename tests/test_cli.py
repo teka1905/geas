@@ -239,8 +239,47 @@ def test_add_appends_operation_to_manifest(tmp_path: Path) -> None:
     assert operations["api.createDocument"] == {
         "source": "main",
         "operation_id": "createDocument",
+        "method": "POST",
+        "path": "/api/v1/workspaces/{workspaceId}/documents",
+        "request": {"content_type": "application/json"},
+        "responses": [{"status": 200, "content_type": "application/json"}],
+        "python_path": ["api", "create_document"],
     }
     assert "api.listDocuments" in operations
+
+
+def test_add_is_idempotent_when_existing_operation_has_extra_policies(
+    tmp_path: Path,
+) -> None:
+    """Повторный ``add`` сохраняет дополнительные политики готовой операции."""
+    project = demo_project(tmp_path / "workspace", {"api.listDocuments": _LIST})
+    arguments = (
+        "add",
+        "api.createDocument",
+        "--source",
+        "main",
+        "--operation-id",
+        "createDocument",
+    )
+    assert project.cli(*arguments).returncode == 0
+    document = yaml.safe_load(project.manifest_path.read_text(encoding="utf-8"))
+    document["operations"]["api.createDocument"]["non_waivable"] = [
+        {
+            "direction": "response",
+            "json_pointer": "/body/id",
+            "rules": ["present"],
+        }
+    ]
+    project.manifest_path.write_text(
+        yaml.safe_dump(document, allow_unicode=True, sort_keys=False), encoding="utf-8"
+    )
+    original = project.manifest_bytes()
+
+    result = project.cli(*arguments)
+
+    assert result.returncode == 0, result.stderr
+    assert project.manifest_bytes() == original
+    assert "уже добавлена с теми же параметрами" in result.stdout
 
 
 def test_add_is_idempotent(tmp_path: Path) -> None:
