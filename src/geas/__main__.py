@@ -1,4 +1,4 @@
-"""Запуск CLI командой ``python -m openapi_contracts``."""
+"""Запуск CLI командой ``python -m geas``."""
 
 from __future__ import annotations
 

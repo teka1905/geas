@@ -20,9 +20,9 @@ from typing import Any
 
 import pytest
 
-from openapi_contracts.errors import RefResolutionError, SpecLoadError
-from openapi_contracts.models import Origin
-from openapi_contracts.normalization.refs import (
+from geas.errors import RefResolutionError, SpecLoadError
+from geas.models import Origin
+from geas.normalization.refs import (
     SpecRegistry,
     resolve_json_pointer,
     unescape_pointer_token,

@@ -5,12 +5,12 @@
 Python-имя само не меняется.
 """
 
-# Файл сгенерирован автоматически командой 'openapi-contracts update'.
-# Не редактируйте его руками: изменения будут затёрты, а 'openapi-contracts check'
+# Файл сгенерирован автоматически командой 'geas update'.
+# Не редактируйте его руками: изменения будут затёрты, а 'geas check'
 # уронит CI на расхождении.
 from __future__ import annotations
 
-from openapi_contracts.runtime import OperationHandle, OperationRegistry
+from geas.runtime import OperationHandle, OperationRegistry
 
 from ._registry import REGISTRY
 

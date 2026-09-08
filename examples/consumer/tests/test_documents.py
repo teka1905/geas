@@ -18,8 +18,8 @@
     python -m jj -H 127.0.0.1 -p 8080 &
     JJ_REMOTE_MOCK_URL=http://127.0.0.1:8080 pytest examples/consumer/tests
 
-Всё, что импортируется ниже из ``openapi_contracts``, — публичный API:
-``openapi_contracts`` и ``openapi_contracts.integrations.d42``. Во внутренности
+Всё, что импортируется ниже из ``geas``, — публичный API:
+``geas`` и ``geas.integrations.d42``. Во внутренности
 интеграций (``...integrations.jj.contract_mock``, ``...d42.converter``) тест не
 лезет и лезть не должен.
 """
@@ -34,8 +34,8 @@ import pytest
 from app_contracts.generated import operations
 from d42 import schema
 
-from openapi_contracts import Direction
-from openapi_contracts.integrations.d42 import EACH, build_fixture, overlay_generators
+from geas import Direction
+from geas.integrations.d42 import EACH, build_fixture, overlay_generators
 
 #: Рабочее пространство, в котором живут документы этого теста.
 WORKSPACE_ID = "w-42"

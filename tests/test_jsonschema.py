@@ -13,9 +13,9 @@ from typing import Any
 
 import pytest
 
-from openapi_contracts.errors import RefResolutionError, ResponseContractError
-from openapi_contracts.jsonschema_gen import JSON_SCHEMA_DIALECT, to_json_schema
-from openapi_contracts.models import (
+from geas.errors import RefResolutionError, ResponseContractError
+from geas.jsonschema_gen import JSON_SCHEMA_DIALECT, to_json_schema
+from geas.models import (
     AdditionalProperties,
     ArrayNode,
     BooleanNode,
@@ -31,7 +31,7 @@ from openapi_contracts.models import (
     UnionKind,
     UnionNode,
 )
-from openapi_contracts.runtime.validation import validate_instance
+from geas.runtime.validation import validate_instance
 from support import make_project, spec
 
 ORIGIN = Origin(source="spec.yaml", pointer="")

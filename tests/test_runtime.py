@@ -1,6 +1,6 @@
 """Runtime: generated namespace, реестр, выбор вариантов и валидация.
 
-Проверяется то, чем пользуется автор теста после ``openapi-contracts update``:
+Проверяется то, чем пользуется автор теста после ``geas update``:
 ``operations.<ns>.<op>`` отдаёт :class:`OperationHandle`, ручка знает свой ключ,
 метод и маршрут, а любая неоднозначность (несколько вариантов ответа, несколько
 тел запроса) обязана падать ошибкой, а не «молча брать первый».
@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from openapi_contracts.errors import (
+from geas.errors import (
     ArtifactError,
     OperationLookupError,
     RequestContractError,
@@ -849,7 +849,7 @@ def test_contract_document_version_is_guarded(tmp_path: Path) -> None:
 
     message = str(info.value)
     assert "999" in message
-    assert "openapi-contracts update" in message
+    assert "geas update" in message
 
 
 def test_missing_contract_document_is_reported(tmp_path: Path) -> None:

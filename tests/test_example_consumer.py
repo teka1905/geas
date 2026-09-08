@@ -2,7 +2,7 @@
 
 Две независимые проверки:
 
-1. ``openapi-contracts -m examples/consumer/manifest.yaml check`` — закоммиченные
+1. ``geas -m examples/consumer/manifest.yaml check`` — закоммиченные
    артефакты примера актуальны. Если кто-то поправит спецификацию и забудет
    ``update``, здесь это и вскроется;
 2. собственные тесты примера действительно проходят. Они гоняются подпроцессом:
@@ -123,12 +123,12 @@ def test_example_exists() -> None:
 def test_example_artifacts_are_current() -> None:
     """``check`` на примере чист: закоммиченные артефакты соответствуют спецификации."""
     result = _run(
-        [sys.executable, "-m", "openapi_contracts.cli", "-m", str(EXAMPLE_MANIFEST), "check"],
+        [sys.executable, "-m", "geas.cli", "-m", str(EXAMPLE_MANIFEST), "check"],
         env={"PYTHONPATH": str(SRC_ROOT)},
     )
     assert result.returncode == 0, (
         "артефакты примера разошлись со спецификацией; запустите "
-        f"'openapi-contracts -m {EXAMPLE_MANIFEST} update'\n"
+        f"'geas -m {EXAMPLE_MANIFEST} update'\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert "артефакты актуальны" in result.stdout
@@ -176,12 +176,12 @@ def test_example_uses_only_public_entry_points() -> None:
             stripped = line.strip()
             if not stripped.startswith(("import ", "from ")):
                 continue
-            assert "openapi_contracts.integrations.jj" not in stripped, (
+            assert "geas.integrations.jj" not in stripped, (
                 f"{path}: интеграция с JJ подключается через OperationHandle.mock(), "
                 f"а не импортом её модулей"
             )
-            if "openapi_contracts.integrations.d42" in stripped:
-                assert stripped.startswith("from openapi_contracts.integrations.d42 import"), (
+            if "geas.integrations.d42" in stripped:
+                assert stripped.startswith("from geas.integrations.d42 import"), (
                     f"{path}: d42-интеграция импортируется только пакетом целиком"
                 )
 

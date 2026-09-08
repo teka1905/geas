@@ -4,8 +4,8 @@
 :mod:`app_contracts.generated`, который целиком принадлежит генератору.
 
 Граница простая: всё, что внутри ``generated/``, переписывается командой
-``openapi-contracts update`` и проверяется в CI командой
-``openapi-contracts check``; всё, что снаружи (обёртки ``mocked_*``, overlay'и,
+``geas update`` и проверяется в CI командой
+``geas check``; всё, что снаружи (обёртки ``mocked_*``, overlay'и,
 фабрики фикстур), пишет и правит команда.
 """
 

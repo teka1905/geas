@@ -79,7 +79,7 @@ waiver ломает генерацию.
 вместе с посчитанным отпечатком:
 
 ```
-$ openapi-contracts update
+$ geas update
 ошибка: схема без type и без единого ограничения принимает что угодно.
 Библиотека не подставляет 'любое значение' молча (contract path /body/payload)
 Если это осознанное исключение, добавьте в waivers.yaml:
@@ -103,7 +103,7 @@ $ openapi-contracts update
 той же функцией библиотеки, а не вручную:
 
 ```python
-from openapi_contracts.waivers import waiver_source_digest
+from geas.waivers import waiver_source_digest
 
 expected_source = waiver_source_digest(
     {"type": "string", "readOnly": True},

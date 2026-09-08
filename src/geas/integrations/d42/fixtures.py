@@ -49,7 +49,7 @@
 
 Если различных значений всё равно не хватает (``minItems`` больше размера ``enum``),
 ``RuntimeError`` d42 переводится в
-:class:`~openapi_contracts.errors.UnsupportedConstructError` с объяснением.
+:class:`~geas.errors.UnsupportedConstructError` с объяснением.
 
 Проверка результата
 -------------------
@@ -57,13 +57,13 @@
 Проекция широкая (это не сужение контракта: она лишь фиксирует выбор ветки), но
 доверять ей на слово нельзя. Поэтому сгенерированное значение валидируется по
 **исходной, непроецированной** схеме через ``d42.validate_or_fail``; расхождение —
-:class:`~openapi_contracts.errors.ValidationFailedError`.
+:class:`~geas.errors.ValidationFailedError`.
 
-Если схема получена из :func:`~openapi_contracts.integrations.d42.overlays.overlay_generators`,
+Если схема получена из :func:`~geas.integrations.d42.overlays.overlay_generators`,
 дополнительно проверяется контракт **до** overlay'я: ручной генератор мог выдать
 значение, нарушающее ``pattern`` или границы сгенерированной схемы (заранее это
 неразрешимо — см. докстринг ``overlays``). Такое расхождение —
-:class:`~openapi_contracts.errors.ContractOverlayError`.
+:class:`~geas.errors.ContractOverlayError`.
 
 Оговорка про типы вне OpenAPI: ``schema.uuid4`` и ``schema.datetime`` генерируются
 средствами d42 (``uuid4()``, ``datetime.utcnow()``) и детерминированными не будут.
@@ -83,12 +83,12 @@ from d42.generation import Generator, Random, RegexGenerator
 from d42.utils import is_ellipsis
 from niltype import Nil, Nilable
 
-from openapi_contracts.errors import (
+from geas.errors import (
     ContractOverlayError,
     UnsupportedConstructError,
     ValidationFailedError,
 )
-from openapi_contracts.integrations.d42.overlays import original_contract
+from geas.integrations.d42.overlays import original_contract
 
 __all__ = ["DEFAULT_SEED", "build_fixture", "project_first_variant", "validate_overlay_fixture"]
 

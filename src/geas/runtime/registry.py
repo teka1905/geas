@@ -38,7 +38,7 @@ def handle_from_document(
         raise ArtifactError(
             f"документ контракта версии {version!r} не поддерживается "
             f"(ожидалась {CONTRACT_DOCUMENT_VERSION}). Перегенерируйте артефакты командой "
-            f"'openapi-contracts update' той же версией библиотеки"
+            f"'geas update' той же версией библиотеки"
         )
 
     request_raw = document["request"]
@@ -155,7 +155,7 @@ class OperationRegistry:
             raise ArtifactError(
                 f"не найден документ контракта {path}. Если generated-пакет попадает в wheel, "
                 f"добавьте *.json в package data; иначе перегенерируйте артефакты командой "
-                f"'openapi-contracts update'"
+                f"'geas update'"
             ) from exc
         except json.JSONDecodeError as exc:
             raise ArtifactError(f"документ контракта {path} повреждён: {exc}") from exc

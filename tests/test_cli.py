@@ -1,4 +1,4 @@
-"""CLI ``openapi-contracts``: коды возврата, вывод и транзакционность команд.
+"""CLI ``geas``: коды возврата, вывод и транзакционность команд.
 
 Каждая проверка гоняет настоящий подпроцесс через :meth:`support.Project.cli`, а не
 вызывает ``main()`` в текущем интерпретаторе. Так проверяются именно коды возврата
@@ -92,7 +92,7 @@ def test_init_creates_manifest_and_waivers(tmp_path: Path) -> None:
     }
     assert "Дальше:" in result.stdout
     for command in ("list", "add", "update", "check"):
-        assert f"openapi-contracts -m {project.manifest_path} {command}" in result.stdout
+        assert f"geas -m {project.manifest_path} {command}" in result.stdout
 
 
 def test_init_refuses_to_overwrite_without_force(tmp_path: Path) -> None:
@@ -234,7 +234,7 @@ def test_add_appends_operation_to_manifest(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "api.createDocument" in result.stdout
-    assert "openapi-contracts update" in result.stdout
+    assert "geas update" in result.stdout
     operations = yaml.safe_load(project.manifest_path.read_text(encoding="utf-8"))["operations"]
     assert operations["api.createDocument"] == {
         "source": "main",
@@ -486,7 +486,7 @@ def test_check_fails_on_hand_edited_artifact(tmp_path: Path) -> None:
     assert result.stdout == ""
     assert "generated-артефакты разошлись со спецификацией" in result.stderr
     assert "отличается:  operations.py" in result.stderr
-    assert "Запустите 'openapi-contracts update'" in result.stderr
+    assert "Запустите 'geas update'" in result.stderr
 
 
 def test_check_fails_on_deleted_artifact(tmp_path: Path) -> None:
@@ -702,4 +702,4 @@ def test_version_flag_exits_zero(tmp_path: Path) -> None:
     result = project.cli("--version")
 
     assert result.returncode == 0
-    assert "openapi-contracts" in result.stdout
+    assert "geas" in result.stdout

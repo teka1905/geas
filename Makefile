@@ -9,8 +9,8 @@ VENV ?= .venv
 BIN := $(VENV)/bin
 
 # Одноразовое окружение для проверки собранного wheel.
-WHEEL_VENV ?= /tmp/openapi-contract-fixtures-wheel-smoke
-PKG := openapi-contract-fixtures
+WHEEL_VENV ?= /tmp/geas-wheel-smoke
+PKG := geas
 
 .DEFAULT_GOAL := help
 
@@ -52,9 +52,9 @@ wheel-smoke: build ## Проверить собранный wheel в однор�
 	$(PYTHON) -m venv $(WHEEL_VENV)
 	$(WHEEL_VENV)/bin/python -m pip install --quiet --upgrade pip
 	$(WHEEL_VENV)/bin/python -m pip install --quiet dist/*.whl
-	$(WHEEL_VENV)/bin/python -c 'import openapi_contracts'
-	$(WHEEL_VENV)/bin/openapi-contracts --help > /dev/null
-	$(WHEEL_VENV)/bin/python -m openapi_contracts --help > /dev/null
+	$(WHEEL_VENV)/bin/python -c 'import geas'
+	$(WHEEL_VENV)/bin/geas --help > /dev/null
+	$(WHEEL_VENV)/bin/python -m geas --help > /dev/null
 	@$(WHEEL_VENV)/bin/python -c 'from importlib.metadata import version; print(version("$(PKG)"))'
 	rm -rf $(WHEEL_VENV)
 

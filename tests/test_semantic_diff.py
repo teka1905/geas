@@ -1,6 +1,6 @@
 """Семантический diff: что считается изменением контракта, а что — оформлением.
 
-Модуль :mod:`openapi_contracts.semantic_diff` отвечает на два вопроса:
+Модуль :mod:`geas.semantic_diff` отвечает на два вопроса:
 
 * ``diff_operations`` — что именно разошлось между двумя наборами документов и
   меняет ли это контракт (``semantic``) или только оформление (``cosmetic``);
@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 import yaml
 
-from openapi_contracts.semantic_diff import (
+from geas.semantic_diff import (
     Change,
     ChangeKind,
     diff_documents,

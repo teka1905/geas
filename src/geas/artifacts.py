@@ -57,8 +57,8 @@ ARTIFACT_FORMAT_VERSION = 1
 GENERATED_INDEX = "_generated.json"
 
 _HEADER = (
-    "# Файл сгенерирован автоматически командой 'openapi-contracts update'.\n"
-    "# Не редактируйте его руками: изменения будут затёрты, а 'openapi-contracts check'\n"
+    "# Файл сгенерирован автоматически командой 'geas update'.\n"
+    "# Не редактируйте его руками: изменения будут затёрты, а 'geas check'\n"
     "# уронит CI на расхождении.\n"
 )
 
@@ -345,7 +345,7 @@ def _render_registry(index: Mapping[str, str]) -> str:
         f"{_HEADER}"
         "from __future__ import annotations\n\n"
         "from pathlib import Path\n\n"
-        "from openapi_contracts.runtime import OperationRegistry\n\n"
+        "from geas.runtime import OperationRegistry\n\n"
         "#: Стабильный ключ операции → имя файла контракта.\n"
         "INDEX: dict[str, str] = {\n"
         f"{entries}"
@@ -393,7 +393,7 @@ def _render_operations(entries: list[tuple[str, tuple[str, ...]]]) -> str:
         _HEADER.rstrip("\n"),
         "from __future__ import annotations",
         "",
-        "from openapi_contracts.runtime import OperationHandle, OperationRegistry",
+        "from geas.runtime import OperationHandle, OperationRegistry",
         "",
         "from ._registry import REGISTRY",
         "",
@@ -621,7 +621,7 @@ def check_artifacts(output_dir: Path, artifacts: ArtifactSet) -> DriftReport:
     )
 
 
-def raise_on_drift(report: DriftReport, *, command: str = "openapi-contracts update") -> None:
+def raise_on_drift(report: DriftReport, *, command: str = "geas update") -> None:
     """Превратить отчёт о расхождении в ошибку с подсказкой, что запустить."""
     if report.is_clean:
         return

@@ -28,7 +28,7 @@
 2. **Путь проверяется в момент сборки overlay'я, а не в момент генерации.** Поле
    переименовали в спецификации — падает импорт модуля с overlay'ями, а не тест
    через неделю. Отсутствующий ключ, элемент не-списка, спуск внутрь листа — всё
-   это :class:`~openapi_contracts.errors.ContractOverlayError` с точным путём.
+   это :class:`~geas.errors.ContractOverlayError` с точным путём.
 3. **``EACH`` — публичный маркер «каждый элемент массива»**; вложенные массивы
    поддерживаются (``("a", EACH, "b", EACH, "c")``).
 4. **Через nullable спуск прозрачен.** Если по пути стоит ``X | schema.none``,
@@ -51,11 +51,11 @@
 
 Технически: :func:`overlay_generators` запоминает исходную схему на объекте
 результата (атрибут :data:`ORIGINAL_CONTRACT_ATTR`), а
-:func:`openapi_contracts.integrations.d42.fixtures.validate_overlay_fixture`
+:func:`geas.integrations.d42.fixtures.validate_overlay_fixture`
 достаёт её и валидирует сгенерированное значение. ``build_fixture`` вызывает эту
 проверку сам, поэтому значение, которое ручной генератор выдал вне контракта
 (строка длиннее ``maxLength``, число вне диапазона), падает
-:class:`~openapi_contracts.errors.ContractOverlayError` в момент генерации, а не
+:class:`~geas.errors.ContractOverlayError` в момент генерации, а не
 уезжает в мок.
 
 Результат overlay'я — обычная схема d42: ``fake()``, ``%`` (``substitute``) и
@@ -77,8 +77,8 @@ from d42.declaration import GenericSchema
 from d42.declaration.types import AnySchema, DictSchema, ListSchema, NoneSchema, Schema
 from niltype import Nil
 
-from openapi_contracts.errors import ContractOverlayError
-from openapi_contracts.paths import ARRAY_ITEMS, format_contract_path
+from geas.errors import ContractOverlayError
+from geas.paths import ARRAY_ITEMS, format_contract_path
 
 __all__ = [
     "EACH",
@@ -105,7 +105,7 @@ EACH = _Each()
 OverlayPath = tuple[str | _Each, ...]
 
 #: Атрибут, в котором на результате overlay'я хранится исходный контракт.
-ORIGINAL_CONTRACT_ATTR = "__openapi_contracts_original__"
+ORIGINAL_CONTRACT_ATTR = "__geas_original__"
 
 
 def overlay_generators(

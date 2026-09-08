@@ -12,8 +12,8 @@ import keyword
 
 import pytest
 
-from openapi_contracts.errors import NamespaceCollisionError
-from openapi_contracts.naming import (
+from geas.errors import NamespaceCollisionError
+from geas.naming import (
     RESERVED_NAMESPACE_ATTRIBUTES,
     d42_schema_name,
     python_identifier,

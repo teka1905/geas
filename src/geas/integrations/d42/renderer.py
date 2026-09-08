@@ -1,6 +1,6 @@
 """IR → детерминированный исходник Python со схемами d42.
 
-Модуль печатает то же самое, что :func:`~openapi_contracts.integrations.d42.converter.to_d42`
+Модуль печатает то же самое, что :func:`~geas.integrations.d42.converter.to_d42`
 собирает в памяти, но в виде текста ``.py``, который можно закоммитить, прочитать
 глазами и подсветить в ревью diff'ом.
 
@@ -8,7 +8,7 @@
 ------------------------
 
 Рендер и сборка объектов идут от **одного плана** (внутреннее дерево вызовов d42
-в :mod:`~openapi_contracts.integrations.d42.converter`). Ветвлений «только для
+в :mod:`~geas.integrations.d42.converter`). Ветвлений «только для
 текста» здесь нет, поэтому ``exec`` сгенерированного модуля даёт схемы, равные
 (``==``) результату ``to_d42`` для тех же узлов IR.
 
@@ -43,8 +43,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from openapi_contracts.errors import ArtifactError, NamespaceCollisionError, RefResolutionError
-from openapi_contracts.integrations.d42.converter import (
+from geas.errors import ArtifactError, NamespaceCollisionError, RefResolutionError
+from geas.integrations.d42.converter import (
     _DictPlan,
     _Leaf,
     _ListPlan,
@@ -56,8 +56,8 @@ from openapi_contracts.integrations.d42.converter import (
     referenced_names,
     topological_order,
 )
-from openapi_contracts.models import SchemaNode
-from openapi_contracts.naming import d42_schema_name, python_identifier
+from geas.models import SchemaNode
+from geas.naming import d42_schema_name, python_identifier
 
 __all__ = ["render_expression", "render_module"]
 
@@ -74,7 +74,7 @@ _GENERATED_NOTICE = (
 )
 
 _HEADER = "from __future__ import annotations\n\nfrom d42 import optional, schema\n"
-_TYPED_DICT_IMPORT = "from openapi_contracts.integrations.d42.typed_dict import typed_dict\n"
+_TYPED_DICT_IMPORT = "from geas.integrations.d42.typed_dict import typed_dict\n"
 
 #: Определения и экспорты принимаются и как mapping, и как последовательность пар.
 Definitions = Mapping[str, SchemaNode] | Sequence[tuple[str, SchemaNode]]
@@ -89,7 +89,7 @@ def render_module(
     """Собрать исходник модуля со схемами d42.
 
     ``definitions`` — именованные определения бандла: имя определения → узел IR;
-    имя переменной выводится через :func:`~openapi_contracts.naming.d42_schema_name`.
+    имя переменной выводится через :func:`~geas.naming.d42_schema_name`.
     ``exports`` — корневые схемы вариантов запроса и ответа: имя переменной (его
     задаёт вызывающий) → узел IR.
 

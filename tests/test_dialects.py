@@ -16,8 +16,8 @@ from typing import Any
 import pytest
 import yaml
 
-from openapi_contracts.dialects.base import detect_dialect
-from openapi_contracts.errors import UnsupportedSpecVersionError
+from geas.dialects.base import detect_dialect
+from geas.errors import UnsupportedSpecVersionError
 from support import make_project, spec
 
 _OPERATIONS = ("listDocuments", "createDocument", "deleteDocument")
@@ -121,7 +121,7 @@ def test_dialect_pair_produces_identical_contracts(tmp_path: Path) -> None:
 
 def test_dialect_pair_has_identical_semantic_fingerprints(tmp_path: Path) -> None:
     """Отпечаток семантики не зависит от диалекта источника."""
-    from openapi_contracts.semantic_diff import semantic_fingerprint
+    from geas.semantic_diff import semantic_fingerprint
 
     swagger = _pair_project(tmp_path / "swagger", "swagger2.json", "spec.json").build()
     openapi = _pair_project(tmp_path / "openapi", "openapi30.yaml", "spec.yaml").build()

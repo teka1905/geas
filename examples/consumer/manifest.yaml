@@ -4,9 +4,9 @@
 # переносим: скопируйте examples/consumer куда угодно, и команды продолжат
 # работать без правок.
 #
-#   openapi-contracts -m manifest.yaml list      # что вообще есть в источнике
-#   openapi-contracts -m manifest.yaml update    # перегенерировать артефакты
-#   openapi-contracts -m manifest.yaml check     # это и ставится в CI
+#   geas -m manifest.yaml list      # что вообще есть в источнике
+#   geas -m manifest.yaml update    # перегенерировать артефакты
+#   geas -m manifest.yaml check     # это и ставится в CI
 version: 1
 
 output:
@@ -27,7 +27,7 @@ sources:
     path: api/openapi.yaml
     # explicit: генерируются только операции из блока operations ниже.
     # Новая ручка в спецификации не попадает в артефакты сама по себе — её
-    # добавляют осознанно командой 'openapi-contracts add'.
+    # добавляют осознанно командой 'geas add'.
     selection: explicit
 
 operations:

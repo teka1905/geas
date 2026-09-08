@@ -16,8 +16,8 @@ from typing import Any
 import pytest
 import yaml
 
-from openapi_contracts.errors import ContractError, ManifestError, NamespaceCollisionError
-from openapi_contracts.manifest import (
+from geas.errors import ContractError, ManifestError, NamespaceCollisionError
+from geas.manifest import (
     MANIFEST_VERSION,
     Manifest,
     NonWaivableRule,

@@ -4,14 +4,14 @@
 требует ни d42, ни JJ.
 """
 
-# Файл сгенерирован автоматически командой 'openapi-contracts update'.
-# Не редактируйте его руками: изменения будут затёрты, а 'openapi-contracts check'
+# Файл сгенерирован автоматически командой 'geas update'.
+# Не редактируйте его руками: изменения будут затёрты, а 'geas check'
 # уронит CI на расхождении.
 from __future__ import annotations
 
 from pathlib import Path
 
-from openapi_contracts.runtime import OperationRegistry
+from geas.runtime import OperationRegistry
 
 #: Стабильный ключ операции → имя файла контракта.
 INDEX: dict[str, str] = {

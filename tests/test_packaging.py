@@ -49,8 +49,8 @@ def test_wheel_and_sdist_are_built(distributions: tuple[Path, Path]) -> None:
     """``python -m build`` даёт и колесо, и исходный дистрибутив."""
     wheel, sdist = distributions
 
-    assert wheel.name.startswith("openapi_contract_fixtures-")
-    assert sdist.name.startswith("openapi_contract_fixtures-")
+    assert wheel.name.startswith("geas-")
+    assert sdist.name.startswith("geas-")
 
 
 def test_wheel_contains_py_typed(distributions: tuple[Path, Path]) -> None:
@@ -60,10 +60,10 @@ def test_wheel_contains_py_typed(distributions: tuple[Path, Path]) -> None:
     with zipfile.ZipFile(wheel) as archive:
         names = archive.namelist()
 
-    assert "openapi_contracts/py.typed" in names
-    assert "openapi_contracts/__main__.py" in names
-    assert "openapi_contracts/integrations/d42/converter.py" in names
-    assert "openapi_contracts/integrations/jj/contract_mock.py" in names
+    assert "geas/py.typed" in names
+    assert "geas/__main__.py" in names
+    assert "geas/integrations/d42/converter.py" in names
+    assert "geas/integrations/jj/contract_mock.py" in names
 
 
 def test_core_uses_non_gpl_jsonschema_format_extra(
@@ -115,7 +115,7 @@ def test_wheel_installs_into_a_clean_environment(
         str(python),
         "-c",
         (
-            "import json, importlib.util as u, openapi_contracts as p;"
+            "import json, importlib.util as u, geas as p;"
             "print(json.dumps({"
             "'version': p.__version__,"
             "'has_d42': u.find_spec('d42') is not None,"
@@ -132,20 +132,20 @@ def test_wheel_installs_into_a_clean_environment(
     assert report["has_d42"] is False, "extra [d42] не должен ставиться сам"
     assert report["has_jj"] is False, "extra [jj] не должен ставиться сам"
 
-    cli = venv / "bin" / "openapi-contracts"
+    cli = venv / "bin" / "geas"
     if not cli.exists():  # pragma: no cover - Windows
-        cli = venv / "Scripts" / "openapi-contracts.exe"
+        cli = venv / "Scripts" / "geas.exe"
     help_result = _run(str(cli), "--help")
     assert help_result.returncode == 0, help_result.stderr
-    assert "openapi-contracts" in help_result.stdout
+    assert "geas" in help_result.stdout
 
     version_result = _run(str(cli), "--version")
     assert version_result.returncode == 0
     assert _declared_version() in version_result.stdout
 
-    module_help = _run(str(python), "-m", "openapi_contracts", "--help")
+    module_help = _run(str(python), "-m", "geas", "--help")
     assert module_help.returncode == 0, module_help.stderr
-    assert "openapi-contracts" in module_help.stdout
+    assert "geas" in module_help.stdout
 
 
 def test_missing_extra_error_names_the_install_command(
@@ -164,14 +164,14 @@ def test_missing_extra_error_names_the_install_command(
         str(python),
         "-c",
         (
-            "from openapi_contracts.errors import MissingExtraError;"
+            "from geas.errors import MissingExtraError;"
             "e = MissingExtraError('jj', 'OperationHandle.mock()');"
             "print(str(e))"
         ),
     )
 
     assert probe.returncode == 0, probe.stderr
-    assert "openapi-contract-fixtures[jj]" in probe.stdout
+    assert "geas[jj]" in probe.stdout
 
 
 def _declared_version() -> str:

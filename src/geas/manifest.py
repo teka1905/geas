@@ -11,7 +11,7 @@ Manifest — единственный вход генератора. Он фик
 * политики (максимальный срок waiver'а, отношение к неизвестным ``format``).
 
 Разбор строгий: неизвестный ключ, неверный тип и противоречивая комбинация — это
-:class:`~openapi_contracts.errors.ManifestError`, а не «поле проигнорировано».
+:class:`~geas.errors.ManifestError`, а не «поле проигнорировано».
 """
 
 from __future__ import annotations
@@ -609,7 +609,7 @@ def dump_manifest(manifest: Manifest) -> str:
 
 
 def default_manifest_document(*, directory: str, package: str, source_path: str) -> dict[str, Any]:
-    """Минимальный manifest, который печатает ``openapi-contracts init``."""
+    """Минимальный manifest, который печатает ``geas init``."""
     return {
         "version": MANIFEST_VERSION,
         "output": {"directory": directory, "package": package},

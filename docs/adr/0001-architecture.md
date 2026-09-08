@@ -1,4 +1,4 @@
-# ADR 0001. Архитектура openapi-contract-fixtures
+# ADR 0001. Архитектура geas
 
 - Статус: принято
 - Версия библиотеки: 0.1.0
@@ -24,10 +24,10 @@ checked-in OpenAPI
 ## Решение 1. Четыре уровня, ядро не зависит от d42 и JJ
 
 ```
-openapi_contracts/            ядро: manifest, IR, нормализация, JSON Schema, артефакты, CLI
-openapi_contracts/dialects/   адаптеры диалектов: swagger2, openapi30 (в будущем openapi31)
-openapi_contracts/integrations/d42/   опционально: IR → d42 2.x, рендер, overlays
-openapi_contracts/integrations/jj/    опционально: OperationHandle.mock() → JJ
+geas/            ядро: manifest, IR, нормализация, JSON Schema, артефакты, CLI
+geas/dialects/   адаптеры диалектов: swagger2, openapi30 (в будущем openapi31)
+geas/integrations/d42/   опционально: IR → d42 2.x, рендер, overlays
+geas/integrations/jj/    опционально: OperationHandle.mock() → JJ
 ```
 
 Ядро импортирует только `jsonschema` и `PyYAML`. Ни один модуль ядра не импортирует
@@ -221,7 +221,7 @@ semantic fingerprint.
 
 - Ядро можно тестировать без сети, без d42 и без JJ.
 - Добавление 3.1 не трогает ядро.
-- Потребитель, которому нужен только drift-check в CI, ставит `openapi-contract-fixtures`
+- Потребитель, которому нужен только drift-check в CI, ставит `geas`
   без extras.
 - Плата: `oneOf` в d42-проекции шире контракта, поэтому JSON Schema-валидация
   обязательна и не может быть отключена.

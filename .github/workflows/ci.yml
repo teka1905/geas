@@ -98,8 +98,8 @@ jobs:
 
       - name: Ядро импортируется и CLI запускается
         run: |
-          python -c "import openapi_contracts"
-          openapi-contracts --help
+          python -c "import geas"
+          geas --help
 
       - name: d42 и jj в этом окружении недоступны
         run: |
@@ -144,9 +144,9 @@ jobs:
           python -m venv /tmp/wheel-smoke
           /tmp/wheel-smoke/bin/python -m pip install --upgrade pip
           /tmp/wheel-smoke/bin/python -m pip install dist/*.whl
-          /tmp/wheel-smoke/bin/python -c "import openapi_contracts"
-          /tmp/wheel-smoke/bin/python -c "from importlib.metadata import version; print(version('openapi-contract-fixtures'))"
-          /tmp/wheel-smoke/bin/openapi-contracts --help
+          /tmp/wheel-smoke/bin/python -c "import geas"
+          /tmp/wheel-smoke/bin/python -c "from importlib.metadata import version; print(version('geas'))"
+          /tmp/wheel-smoke/bin/geas --help
 
       - uses: actions/upload-artifact@v4
         with:

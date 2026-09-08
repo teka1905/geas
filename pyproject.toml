@@ -3,12 +3,12 @@ requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [project]
-name = "openapi-contract-fixtures"
+name = "geas"
 version = "0.1.0"
 description = "Генерация тестовых контрактов, JSON Schema, d42-схем и operation-aware моков из checked-in OpenAPI"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "openapi-contract-fixtures contributors" }]
+authors = [{ name = "geas contributors" }]
 keywords = ["openapi", "swagger", "contract-testing", "json-schema", "d42", "jj", "mocks", "fixtures"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -45,14 +45,14 @@ dev = [
 ]
 
 [project.scripts]
-openapi-contracts = "openapi_contracts.cli:main"
+geas = "geas.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/teka1905/openapi-contract-fixtures"
-Changelog = "https://github.com/teka1905/openapi-contract-fixtures/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/teka1905/geas"
+Changelog = "https://github.com/teka1905/geas/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/openapi_contracts"]
+packages = ["src/geas"]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -69,7 +69,7 @@ line-length = 100
 target-version = "py310"
 src = ["src", "tests"]
 # Generated-артефакты форматировать нельзя: их байты — часть контракта, и любой
-# формат-проход ломает 'openapi-contracts check'. То же самое потребитель обязан
+# формат-проход ломает 'geas check'. То же самое потребитель обязан
 # сделать у себя — см. README, раздел про CI.
 extend-exclude = ["**/generated/**"]
 
@@ -91,11 +91,11 @@ ignore = [
 "examples/*" = ["E501"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["openapi_contracts"]
+known-first-party = ["geas"]
 
 [tool.mypy]
 python_version = "3.10"
-files = ["src/openapi_contracts"]
+files = ["src/geas"]
 strict = true
 warn_unreachable = true
 disallow_any_generics = true
@@ -112,4 +112,4 @@ asyncio_mode = "auto"
 markers = [
     "slow: сборка дистрибутива и установка в чистое окружение (исключается '-m \"not slow\"')",
 ]
-filterwarnings = ["error::DeprecationWarning:openapi_contracts.*"]
+filterwarnings = ["error::DeprecationWarning:geas.*"]

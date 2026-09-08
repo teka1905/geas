@@ -18,14 +18,14 @@ from typing import Any
 
 import pytest
 
-from openapi_contracts.errors import (
+from geas.errors import (
     ContractError,
     ManifestError,
     UnsupportedConstructError,
     WaiverError,
 )
-from openapi_contracts.fingerprints import semantic_source_digest
-from openapi_contracts.waivers import waiver_source_digest
+from geas.fingerprints import semantic_source_digest
+from geas.waivers import waiver_source_digest
 from support import Project, make_project, spec
 
 #: Ключ операции из фикстуры ``features/no_type.yaml``.
@@ -292,7 +292,7 @@ def test_expired_waiver(tmp_path: Path) -> None:
 
 
 def test_expired_waiver_fails_the_cli(tmp_path: Path) -> None:
-    """Сквозная проверка: просроченный waiver роняет ``openapi-contracts check``."""
+    """Сквозная проверка: просроченный waiver роняет ``geas check``."""
     project = no_type_project(tmp_path / "project")
     project.write_waivers([waiver(expires_at=in_days(-1))])
 

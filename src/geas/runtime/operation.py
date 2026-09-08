@@ -619,7 +619,7 @@ class OperationHandle:
         except AttributeError as exc:
             raise OperationLookupError(
                 f"в модуле {module_name} нет схемы {export!r}; перегенерируйте артефакты "
-                f"командой 'openapi-contracts update'",
+                f"командой 'geas update'",
                 operation_key=self._key,
             ) from exc
 
@@ -644,7 +644,7 @@ class OperationHandle:
         """Создать operation-aware JJ-мок.
 
         Требует extra ``[jj]``. Подробности — в
-        :class:`openapi_contracts.integrations.jj.ContractMock`.
+        :class:`geas.integrations.jj.ContractMock`.
         """
         try:
             from ..integrations.jj.contract_mock import ContractMock

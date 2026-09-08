@@ -24,8 +24,8 @@ from typing import Any
 
 import pytest
 
-from openapi_contracts.contracts import BuiltOperation
-from openapi_contracts.errors import RefResolutionError, UnsupportedConstructError
+from geas.contracts import BuiltOperation
+from geas.errors import RefResolutionError, UnsupportedConstructError
 from support import Project, make_project, spec
 
 #: Каркас операции, у которой единственный ответ описан схемой из теста.

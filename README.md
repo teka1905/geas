@@ -1,11 +1,16 @@
-# openapi-contract-fixtures
+# geas
 
 Тестовые контракты, JSON Schema, d42-схемы и operation-aware моки, сгенерированные из
 checked-in OpenAPI.
 
+**Geas** — обязательное условие или запрет из ирландской и шотландской традиции:
+соблюдение даёт силу, нарушение неизбежно имеет последствия. Здесь таким условием
+становится OpenAPI-контракт: библиотека превращает его в исполняемые схемы и сразу
+показывает место, где fixture, mock или настоящий запрос перестал ему соответствовать.
+
 - Версия: **0.1.0**
 - Python: **3.10+**
-- Ядро зависит только от `jsonschema[format]` и `PyYAML`. d42 и JJ — опциональные extras.
+- Ядро зависит только от `jsonschema[format-nongpl]` и `PyYAML`. d42 и JJ — опциональные extras.
 
 ---
 
@@ -40,7 +45,7 @@ checked-in OpenAPI
 | **generator overlays** | подмена генератора отдельного листа (осмысленные названия вместо `9-hK_2 0zQ`) без правки generated-файлов |
 | **generated operation handles** | статический typed namespace: `operations.ws2.add_ticket` |
 | **operation-aware JJ-моки** | тело мока валидируется **до** регистрации, каждый перехваченный запрос — **после** выхода из блока |
-| **проверка drift в CI** | `openapi-contracts check` роняет сборку, если закоммиченные артефакты разошлись со спецификацией |
+| **проверка drift в CI** | `geas check` роняет сборку, если закоммиченные артефакты разошлись со спецификацией |
 
 Главный принцип — **fail closed**. Ни одна неподдержанная конструкция не превращается
 молча в «принимает что угодно». Единственное послабление — явный, срочный и закреплённый
@@ -53,16 +58,16 @@ checked-in OpenAPI
 ### Установка
 
 ```bash
-pip install openapi-contract-fixtures            # ядро: JSON Schema + CLI + drift-check
-pip install 'openapi-contract-fixtures[d42]'     # + генерация d42-схем и фикстур
-pip install 'openapi-contract-fixtures[jj]'      # + operation-aware моки
-pip install 'openapi-contract-fixtures[all]'     # всё сразу
+pip install geas            # ядро: JSON Schema + CLI + drift-check
+pip install 'geas[d42]'     # + генерация d42-схем и фикстур
+pip install 'geas[jj]'      # + operation-aware моки
+pip install 'geas[all]'     # всё сразу
 ```
 
 ### `init` — каркас manifest и waivers
 
 ```bash
-openapi-contracts -m manifest.yaml init \
+geas -m manifest.yaml init \
     --source api/openapi.yaml \
     --directory demo/generated \
     --package demo.generated
@@ -73,10 +78,10 @@ openapi-contracts -m manifest.yaml init \
 создан waivers.yaml
 
 Дальше:
-  openapi-contracts -m manifest.yaml list
-  openapi-contracts -m manifest.yaml add <ключ> --source main --operation-id <id>
-  openapi-contracts -m manifest.yaml update
-  openapi-contracts -m manifest.yaml check   # это и ставится в CI
+  geas -m manifest.yaml list
+  geas -m manifest.yaml add <ключ> --source main --operation-id <id>
+  geas -m manifest.yaml update
+  geas -m manifest.yaml check   # это и ставится в CI
 ```
 
 Получившийся `manifest.yaml`:
@@ -100,7 +105,7 @@ operations: {}
 ### `list` — что вообще есть в источнике
 
 ```bash
-openapi-contracts -m manifest.yaml list
+geas -m manifest.yaml list
 ```
 
 ```
@@ -120,13 +125,13 @@ openapi-contracts -m manifest.yaml list
 ### `add` — положить операцию в allowlist
 
 ```bash
-openapi-contracts -m manifest.yaml add ws2.addTicket \
+geas -m manifest.yaml add ws2.addTicket \
     --source main --operation-id addTicket
 ```
 
 ```
 операция ws2.addTicket добавлена в /path/to/manifest.yaml
-Теперь запустите 'openapi-contracts update', чтобы обновить артефакты
+Теперь запустите 'geas update', чтобы обновить артефакты
 ```
 
 `add` **транзакционен**: операция целиком нормализуется и рендерится во временный каталог
@@ -139,7 +144,7 @@ request content type и успешный response-вариант, а Python path
 ### `update` — сгенерировать артефакты
 
 ```bash
-openapi-contracts -m manifest.yaml update
+geas -m manifest.yaml update
 ```
 
 ```
@@ -149,7 +154,7 @@ openapi-contracts -m manifest.yaml update
 ### `check` — проверить, что закоммиченное совпадает со спецификацией
 
 ```bash
-openapi-contracts -m manifest.yaml check
+geas -m manifest.yaml check
 ```
 
 ```
@@ -162,7 +167,7 @@ openapi-contracts -m manifest.yaml check
 generated-артефакты разошлись со спецификацией:
   отличается:  contracts/api__delete_document.json
 
-Запустите 'openapi-contracts update' и закоммитьте результат
+Запустите 'geas update' и закоммитьте результат
 ```
 
 Полный справочник по командам и флагам — [docs/cli.md](docs/cli.md).
@@ -172,10 +177,10 @@ generated-артефакты разошлись со спецификацией:
 ## 3. Архитектура
 
 ```
-openapi_contracts/                  ядро: manifest, IR, нормализация, JSON Schema, артефакты, CLI
-openapi_contracts/dialects/         адаптеры диалектов: swagger2, openapi30
-openapi_contracts/integrations/d42/ опционально: IR → d42 2.x, рендер, overlays, фикстуры
-openapi_contracts/integrations/jj/  опционально: OperationHandle.mock() → JJ
+geas/                  ядро: manifest, IR, нормализация, JSON Schema, артефакты, CLI
+geas/dialects/         адаптеры диалектов: swagger2, openapi30
+geas/integrations/d42/ опционально: IR → d42 2.x, рендер, overlays, фикстуры
+geas/integrations/jj/  опционально: OperationHandle.mock() → JJ
 ```
 
 **Ядро независимо.** Оно импортирует только `jsonschema` и `PyYAML`. Ни один модуль ядра
@@ -270,7 +275,7 @@ operations: {}
 ## 5. CLI
 
 ```
-openapi-contracts [-h] [--version] [-m MANIFEST] {init,list,inspect,add,update,check,diff}
+geas [-h] [--version] [-m MANIFEST] {init,list,inspect,add,update,check,diff}
 ```
 
 | Команда | Что делает |
@@ -349,7 +354,7 @@ Generated d42-схема варианта — через `d42_schema()`; имя 
 контракта (`d42_export`), угадывать его не нужно:
 
 ```python
-from openapi_contracts import Direction
+from geas import Direction
 
 variant = op.response(status=200)
 GeneratedTicketSchema = op.d42_schema(Direction.RESPONSE, export=variant.d42_export)
@@ -484,8 +489,8 @@ assert request.method == "POST"
 ```python
 from d42 import schema
 
-from openapi_contracts import Direction
-from openapi_contracts.integrations.d42 import EACH, build_fixture, overlay_generators
+from geas import Direction
+from geas.integrations.d42 import EACH, build_fixture, overlay_generators
 
 op = operations.ws2.get_queue
 variant = op.response(status=200)
@@ -596,7 +601,7 @@ operations:
 
 ```yaml
 - name: contract drift
-  run: openapi-contracts -m contracts/manifest.yaml check
+  run: geas -m contracts/manifest.yaml check
 ```
 
 `check` ничего не меняет в рабочем дереве: он рендерит набор в памяти и сравнивает с тем,
@@ -616,7 +621,7 @@ generated-артефакты разошлись со спецификацией:
   отличается:  operations.py
   лишний:      contracts/ws2__old_operation.json
 
-Запустите 'openapi-contracts update' и закоммитьте результат
+Запустите 'geas update' и закоммитьте результат
 ```
 
 Полезное дополнение — `diff`: он показывает, **что именно** изменилось в контракте, и
@@ -651,13 +656,13 @@ ws2.addTicket:
 
 ```
 MissingExtraError: operation-aware моки требует опциональной зависимости.
-Установите: pip install 'openapi-contract-fixtures[jj]'
+Установите: pip install 'geas[jj]'
 
 MissingExtraError: generated d42-схемы требует опциональной зависимости.
-Установите: pip install 'openapi-contract-fixtures[d42]'
+Установите: pip install 'geas[d42]'
 
 ошибка: генерация d42-схем для операций ws2.addTicket требует опциональной зависимости.
-Установите: pip install 'openapi-contract-fixtures[d42]'
+Установите: pip install 'geas[d42]'
 ```
 
 `MissingExtraError` наследуется и от `ContractError`, и от `ImportError`, поэтому ловится
@@ -791,7 +796,7 @@ async with operations.ws2.add_ticket.mock(response=body, wait_for_requests=1) as
   а `OperationHandle.d42_schema()` для такой операции поднимает `OperationLookupError`.
 - **`update` и `check` требуют extra `[d42]`, если для операций включены d42-артефакты.**
   Выключить их можно точечно ключом `d42: false` у операции в manifest либо флагом
-  `--no-d42` у `openapi-contracts add`.
+  `--no-d42` у `geas add`.
 - **Параметры — только скаляры и массивы скаляров.** Объекты в параметрах и вложенные
   массивы не сериализуются однозначно и отклоняются.
 - **Тело — только JSON-совместимые media type** (`application/json` и `*/+json`; в Swagger

@@ -15,11 +15,11 @@ import pytest
 from d42 import fake, optional, schema
 from d42.utils import make_required
 
-from openapi_contracts.errors import ContractOverlayError
-from openapi_contracts.integrations.d42 import EACH, build_fixture, overlay_generators
-from openapi_contracts.integrations.d42.overlays import original_contract
-from openapi_contracts.models import Direction
-from openapi_contracts.runtime.validation import validate_instance
+from geas.errors import ContractOverlayError
+from geas.integrations.d42 import EACH, build_fixture, overlay_generators
+from geas.integrations.d42.overlays import original_contract
+from geas.models import Direction
+from geas.runtime.validation import validate_instance
 from support import make_project, spec
 
 
