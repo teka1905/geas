@@ -1,0 +1,22 @@
+# $ref, уводящий за корень источника.
+#
+# root источника — каталог этого файла (multifile/escape/), а ../../../outside.yaml
+# указывает на tests/fixtures/outside.yaml. Файл-цель существует специально: иначе
+# ошибка была бы «файл не найден», а проверить надо именно отказ по выходу за корень.
+openapi: "3.0.3"
+
+info:
+  title: Escaping ref fixture
+  version: "1.0.0"
+
+paths:
+  /outside:
+    get:
+      operationId: getOutside
+      responses:
+        "200":
+          description: Ссылка за пределы корня источника
+          content:
+            application/json:
+              schema:
+                $ref: "../../../outside.yaml#/x"

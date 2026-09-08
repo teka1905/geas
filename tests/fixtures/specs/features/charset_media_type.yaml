@@ -1,0 +1,35 @@
+# Media type с параметрами: 'application/json;charset=UTF-8' и вариант с пробелом
+# и другим регистром. Оба обязаны нормализоваться в 'application/json'.
+openapi: "3.0.3"
+
+info:
+  title: Charset media type fixture
+  version: "1.0.0"
+
+paths:
+  /labels:
+    post:
+      operationId: createLabel
+      requestBody:
+        required: true
+        content:
+          "application/json;charset=UTF-8":
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+      responses:
+        "200":
+          description: Созданная метка
+          content:
+            "application/json; charset=utf-8":
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id:
+                    type: string
+                    format: uuid

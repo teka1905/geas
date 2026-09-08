@@ -1,0 +1,34 @@
+# anyOf: варианты не взаимоисключающие, вид композиции обязан сохраниться точно.
+openapi: "3.0.3"
+
+info:
+  title: Anyof fixture
+  version: "1.0.0"
+
+paths:
+  /labels/{labelId}:
+    get:
+      operationId: getLabel
+      parameters:
+        - name: labelId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Метка целиком либо только её имя
+          content:
+            application/json:
+              schema:
+                anyOf:
+                  - type: string
+                    minLength: 1
+                  - type: object
+                    required: [id]
+                    properties:
+                      id:
+                        type: string
+                      color:
+                        type: string
+                        enum: [red, green, blue]

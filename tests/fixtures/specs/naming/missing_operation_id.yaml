@@ -1,0 +1,13 @@
+# Операция без operationId: устойчивого ключа у неё нет.
+openapi: "3.0.3"
+
+info:
+  title: Missing operationId fixture
+  version: "1.0.0"
+
+paths:
+  /documents:
+    get:
+      responses:
+        "204":
+          description: Пустой ответ

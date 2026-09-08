@@ -1,0 +1,55 @@
+# Несколько content type у одной операции.
+#
+# Запрос: application/json и application/merge-patch+json — оба JSON-совместимые,
+# у каждого свой контракт тела.
+# Ответ: application/json (контракт есть) и application/pdf (бинарный, структурного
+# контракта не имеет).
+openapi: "3.0.3"
+
+info:
+  title: Multiple content types fixture
+  version: "1.0.0"
+
+paths:
+  /documents/{documentId}/content:
+    put:
+      operationId: replaceDocumentContent
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [body]
+              properties:
+                body:
+                  type: string
+          application/merge-patch+json:
+            schema:
+              type: object
+              properties:
+                body:
+                  type: string
+      responses:
+        "200":
+          description: Документ в двух представлениях
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revision]
+                properties:
+                  revision:
+                    type: integer
+                    format: int64
+            application/pdf:
+              schema:
+                type: string
+                format: binary

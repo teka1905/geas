@@ -1,0 +1,77 @@
+# Конструкции, которых в OpenAPI 3.0 нет. Каждая вынесена в отдельную операцию,
+# чтобы её можно было проверить независимо от остальных. Все шесть обязаны быть
+# отклонены с точной диагностикой, а не превращены в «что угодно».
+openapi: "3.0.3"
+
+info:
+  title: Unsupported keywords fixture
+  version: "1.0.0"
+
+paths:
+  /not:
+    get:
+      operationId: getNot
+      responses:
+        "200":
+          description: not
+          content:
+            application/json:
+              schema:
+                not:
+                  type: string
+  /const:
+    get:
+      operationId: getConst
+      responses:
+        "200":
+          description: const
+          content:
+            application/json:
+              schema:
+                const: fixed
+  /pattern-properties:
+    get:
+      operationId: getPatternProperties
+      responses:
+        "200":
+          description: patternProperties
+          content:
+            application/json:
+              schema:
+                type: object
+                patternProperties:
+                  "^x-":
+                    type: string
+  /conditional:
+    get:
+      operationId: getConditional
+      responses:
+        "200":
+          description: if / then
+          content:
+            application/json:
+              schema:
+                type: object
+                if:
+                  required: [a]
+                then:
+                  required: [b]
+  /boolean-schema:
+    get:
+      operationId: getBooleanSchema
+      responses:
+        "200":
+          description: булева схема true
+          content:
+            application/json:
+              schema: true
+  /type-array:
+    get:
+      operationId: getTypeArray
+      responses:
+        "200":
+          description: type списком
+          content:
+            application/json:
+              schema:
+                type: [string, "null"]

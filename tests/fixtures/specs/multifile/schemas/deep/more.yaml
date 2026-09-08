@@ -1,0 +1,13 @@
+# Самый глубокий фрагмент многофайлового источника.
+components:
+  schemas:
+    Detail:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          format: uuid
+        weight:
+          type: number
+          minimum: 0

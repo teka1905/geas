@@ -1,0 +1,24 @@
+# Неизвестный format на строке. При политике по умолчанию (reject) — ошибка,
+# при policies.unknown_formats = annotate — сохраняется как аннотация.
+openapi: "3.0.3"
+
+info:
+  title: Unknown format fixture
+  version: "1.0.0"
+
+paths:
+  /documents/tag:
+    get:
+      operationId: getDocumentTag
+      responses:
+        "200":
+          description: Метка документа с нестандартным format
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tag]
+                properties:
+                  tag:
+                    type: string
+                    format: my-custom-tag

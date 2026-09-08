@@ -1,0 +1,11 @@
+# Файл-приманка для specs/multifile/escape/root.yaml.
+#
+# Лежит ВНЕ корня того источника (multifile/escape/) и существует специально,
+# чтобы проверка «$ref уводит за корень» срабатывала именно по границе корня,
+# а не по отсутствию файла.
+x:
+  type: object
+  required: [leaked]
+  properties:
+    leaked:
+      type: string

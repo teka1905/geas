@@ -1,0 +1,19 @@
+# Реальная особенность, которую приходится терпеть: секции info нет вообще.
+# Это единственный фикстурный файл без info.title / info.version.
+openapi: "3.0.3"
+
+paths:
+  /ping:
+    get:
+      operationId: getPing
+      responses:
+        "200":
+          description: Ответ на проверку доступности
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pong]
+                properties:
+                  pong:
+                    type: boolean

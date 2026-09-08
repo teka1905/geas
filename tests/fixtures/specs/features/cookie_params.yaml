@@ -1,0 +1,30 @@
+# Параметр в cookie: отдельное пространство имён параметров, style=form по умолчанию.
+openapi: "3.0.3"
+
+info:
+  title: Cookie parameter fixture
+  version: "1.0.0"
+
+paths:
+  /session:
+    get:
+      operationId: getSession
+      parameters:
+        - name: session_id
+          in: cookie
+          required: true
+          schema:
+            type: string
+            minLength: 8
+      responses:
+        "200":
+          description: Текущая сессия
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [memberId]
+                properties:
+                  memberId:
+                    type: string
+                    format: uuid

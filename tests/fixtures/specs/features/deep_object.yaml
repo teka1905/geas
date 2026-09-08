@@ -1,0 +1,46 @@
+# style: deepObject в query. Обе операции обязаны быть отклонены.
+#
+# searchDocuments — реалистичная форма (deepObject над объектом): параметр-объект
+# однозначно не сериализуется.
+# searchDocumentsScalar — та же комбинация над скаляром: диагностика приходит уже
+# из матрицы сериализации и называет style=deepObject явно.
+openapi: "3.0.3"
+
+info:
+  title: Deep object parameter fixture
+  version: "1.0.0"
+
+paths:
+  /documents/search:
+    get:
+      operationId: searchDocuments
+      parameters:
+        - name: filter
+          in: query
+          required: false
+          style: deepObject
+          explode: true
+          schema:
+            type: object
+            properties:
+              title:
+                type: string
+              archived:
+                type: boolean
+      responses:
+        "204":
+          description: Ничего не найдено
+  /documents/search-scalar:
+    get:
+      operationId: searchDocumentsScalar
+      parameters:
+        - name: filter
+          in: query
+          required: false
+          style: deepObject
+          explode: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Ничего не найдено

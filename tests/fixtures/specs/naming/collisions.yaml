@@ -1,0 +1,45 @@
+# Имена, которые ломаются при выводе публичного Python-пути.
+#
+#   getItem / get_item — после snake_case дают одно и то же имя get_item;
+#   import            — ключевое слово Python;
+#   2fa               — начинается с цифры;
+#   by_key            — зарезервированный атрибут generated namespace.
+#
+# Ни одно из них не имеет права получить молчаливый числовой суффикс.
+openapi: "3.0.3"
+
+info:
+  title: Naming collisions fixture
+  version: "1.0.0"
+
+paths:
+  /items/camel:
+    get:
+      operationId: getItem
+      responses:
+        "204":
+          description: Пустой ответ
+  /items/snake:
+    get:
+      operationId: get_item
+      responses:
+        "204":
+          description: Пустой ответ
+  /items/keyword:
+    get:
+      operationId: import
+      responses:
+        "204":
+          description: Пустой ответ
+  /items/digit:
+    get:
+      operationId: 2fa
+      responses:
+        "204":
+          description: Пустой ответ
+  /items/reserved:
+    get:
+      operationId: by_key
+      responses:
+        "204":
+          description: Пустой ответ

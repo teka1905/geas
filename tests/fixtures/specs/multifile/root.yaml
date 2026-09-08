@@ -1,0 +1,46 @@
+# Корневой документ многофайлового источника.
+#
+# Ожидаемый root источника — каталог multifile/ (по умолчанию это каталог самой
+# спецификации). Обе ссылки ведут внутрь него:
+#   * ./schemas/common.yaml — соседний файл;
+#   * ./schemas/deep/more.yaml — файл на два уровня глубже; на него же ссылается
+#     сам common.yaml относительным путём ./deep/more.yaml.
+openapi: "3.0.3"
+
+info:
+  title: Multifile fixture
+  version: "1.0.0"
+
+paths:
+  /labels/{labelId}:
+    get:
+      operationId: getLabel
+      parameters:
+        - name: labelId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Метка из соседнего файла
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/common.yaml#/components/schemas/Label"
+  /labels/{labelId}/detail:
+    get:
+      operationId: getLabelDetail
+      parameters:
+        - name: labelId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Деталь из вложенного файла
+          content:
+            application/json:
+              schema:
+                $ref: "./schemas/deep/more.yaml#/components/schemas/Detail"

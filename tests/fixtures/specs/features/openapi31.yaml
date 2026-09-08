@@ -1,0 +1,26 @@
+# OpenAPI 3.1.0 — версия обязана быть отклонена с точной диагностикой.
+# 3.1 не является надмножеством 3.0: здесь сразу видны type списком и числовой
+# exclusiveMinimum, которые правилами 3.0 читаются неверно.
+openapi: "3.1.0"
+
+info:
+  title: OpenAPI 3.1 fixture
+  version: "1.0.0"
+
+paths:
+  /documents:
+    get:
+      operationId: listDocuments
+      responses:
+        "200":
+          description: Список документов
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  title:
+                    type: [string, "null"]
+                  revision:
+                    type: integer
+                    exclusiveMinimum: 0

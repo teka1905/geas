@@ -1,0 +1,18 @@
+# Фрагмент схем многофайлового источника. Самостоятельной спецификацией не
+# является: используется только как цель $ref из ../root.yaml.
+#
+# Ссылка ./deep/more.yaml разрешается относительно ЭТОГО файла, а не корневого.
+components:
+  schemas:
+    Label:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        color:
+          type: string
+          enum: [red, green, blue]
+        detail:
+          $ref: "./deep/more.yaml#/components/schemas/Detail"

@@ -1,0 +1,42 @@
+# Регрессия на position-awareness: свойства объекта названы ровно так же, как
+# ключевые слова Schema Object. Обход, который смотрит на имя ключа без учёта
+# позиции, сломает здесь всё сразу.
+openapi: "3.0.3"
+
+info:
+  title: Keyword named properties fixture
+  version: "1.0.0"
+
+paths:
+  /settings:
+    get:
+      operationId: getSettings
+      responses:
+        "200":
+          description: Настройки, поля которых названы как ключевые слова
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [type, enum]
+                properties:
+                  type:
+                    type: string
+                  items:
+                    type: array
+                    items:
+                      type: integer
+                  required:
+                    type: boolean
+                  properties:
+                    type: object
+                    additionalProperties:
+                      type: string
+                  description:
+                    type: string
+                  enum:
+                    type: string
+                    enum: [compact, full]
+                  allOf:
+                    type: integer
+                    minimum: 0

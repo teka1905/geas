@@ -1,0 +1,20 @@
+# Внешний $ref по сети. Отклоняется всегда: библиотека не ходит в сеть вообще,
+# независимо от того, разрешает ли что-то политика источника.
+# Домен example.invalid зарезервирован RFC 2606 и никогда не резолвится.
+openapi: "3.0.3"
+
+info:
+  title: Remote ref fixture
+  version: "1.0.0"
+
+paths:
+  /remote:
+    get:
+      operationId: getRemote
+      responses:
+        "200":
+          description: Ссылка на внешний документ по HTTPS
+          content:
+            application/json:
+              schema:
+                $ref: "https://example.invalid/x.yaml#/y"

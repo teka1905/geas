@@ -1,0 +1,41 @@
+# oneOf рядом с собственными type/properties/required.
+openapi: "3.0.3"
+
+info:
+  title: OneOf with siblings fixture
+  version: "1.0.0"
+
+paths:
+  /blocks:
+    get:
+      operationId: getBlock
+      responses:
+        "200":
+          description: Блок документа с общим полем kind
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [kind]
+                properties:
+                  kind:
+                    type: string
+                oneOf:
+                  - $ref: "#/components/schemas/TextBlock"
+                  - $ref: "#/components/schemas/ImageBlock"
+
+components:
+  schemas:
+    TextBlock:
+      type: object
+      required: [text]
+      properties:
+        text:
+          type: string
+    ImageBlock:
+      type: object
+      required: [url]
+      properties:
+        url:
+          type: string
+          format: uri

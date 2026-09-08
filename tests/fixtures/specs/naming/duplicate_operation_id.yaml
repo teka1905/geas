@@ -1,0 +1,22 @@
+# Один и тот же operationId у двух разных операций. Спецификация это запрещает,
+# но генераторы выпускают такое регулярно — привязка обязана падать, а не выбирать
+# «первую попавшуюся» операцию.
+openapi: "3.0.3"
+
+info:
+  title: Duplicate operationId fixture
+  version: "1.0.0"
+
+paths:
+  /documents:
+    get:
+      operationId: listDocuments
+      responses:
+        "204":
+          description: Пустой ответ
+  /archive/documents:
+    get:
+      operationId: listDocuments
+      responses:
+        "204":
+          description: Пустой ответ

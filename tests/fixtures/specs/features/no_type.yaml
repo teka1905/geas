@@ -1,0 +1,22 @@
+# Свойство без type и вообще без единого ограничения: описание есть, контракта нет.
+# Такое место не имеет права молча стать «любым значением».
+openapi: "3.0.3"
+
+info:
+  title: No type fixture
+  version: "1.0.0"
+
+paths:
+  /notes:
+    get:
+      operationId: getNote
+      responses:
+        "200":
+          description: Заметка с полем без контракта
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  payload:
+                    description: Ограничений нет — форма значения неизвестна

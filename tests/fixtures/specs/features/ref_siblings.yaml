@@ -1,0 +1,60 @@
+# Соседи $ref. Разрешены только те ключи, которые не несут семантики контракта,
+# плюс readOnly / writeOnly / nullable, которые библиотека применяет сама.
+#
+# Операция getLegalCard разбирается успешно, getIllegalCard — обязана быть
+# отклонена: minLength рядом с $ref спецификация игнорирует молча, а молчаливая
+# потеря ограничения недопустима.
+openapi: "3.0.3"
+
+info:
+  title: Ref siblings fixture
+  version: "1.0.0"
+
+paths:
+  /cards/legal:
+    get:
+      operationId: getLegalCard
+      responses:
+        "200":
+          description: Допустимые соседи $ref
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  label:
+                    $ref: "#/components/schemas/Label"
+                    readOnly: true
+                  owner:
+                    $ref: "#/components/schemas/Member"
+                    nullable: true
+  /cards/illegal:
+    get:
+      operationId: getIllegalCard
+      responses:
+        "200":
+          description: Недопустимый сосед $ref
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  label:
+                    $ref: "#/components/schemas/Label"
+                    minLength: 3
+
+components:
+  schemas:
+    Label:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+    Member:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          format: uuid

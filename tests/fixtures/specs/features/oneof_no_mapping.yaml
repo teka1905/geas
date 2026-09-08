@@ -1,0 +1,42 @@
+# oneOf + discriminator БЕЗ mapping: значение поля выводится из имён вариантов.
+openapi: "3.0.3"
+
+info:
+  title: Oneof without mapping fixture
+  version: "1.0.0"
+
+paths:
+  /blocks:
+    get:
+      operationId: getBlock
+      responses:
+        "200":
+          description: Блок документа
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/TextBlock"
+                  - $ref: "#/components/schemas/ImageBlock"
+                discriminator:
+                  propertyName: kind
+
+components:
+  schemas:
+    TextBlock:
+      type: object
+      required: [kind, text]
+      properties:
+        kind:
+          type: string
+        text:
+          type: string
+    ImageBlock:
+      type: object
+      required: [kind, url]
+      properties:
+        kind:
+          type: string
+        url:
+          type: string
+          format: uri

@@ -1,0 +1,59 @@
+# Рекурсия двух видов.
+#
+# getTree — прямая самоссылка: Node содержит массив Node.
+# getCycle — взаимный цикл из трёх узлов: Alpha → Beta → Gamma → Alpha.
+openapi: "3.0.3"
+
+info:
+  title: Recursive schemas fixture
+  version: "1.0.0"
+
+paths:
+  /trees:
+    get:
+      operationId: getTree
+      responses:
+        "200":
+          description: Самоссылающееся дерево разделов
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Node"
+  /cycles:
+    get:
+      operationId: getCycle
+      responses:
+        "200":
+          description: Взаимная рекурсия из трёх схем
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Alpha"
+
+components:
+  schemas:
+    Node:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+    Alpha:
+      type: object
+      properties:
+        beta:
+          $ref: "#/components/schemas/Beta"
+    Beta:
+      type: object
+      properties:
+        gamma:
+          $ref: "#/components/schemas/Gamma"
+    Gamma:
+      type: object
+      properties:
+        alpha:
+          $ref: "#/components/schemas/Alpha"

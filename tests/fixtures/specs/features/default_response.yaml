@@ -1,0 +1,23 @@
+# Единственный ответ операции — default: конкретных статусов нет вообще.
+openapi: "3.0.3"
+
+info:
+  title: Default response fixture
+  version: "1.0.0"
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      responses:
+        default:
+          description: Состояние сервиса при любом статусе
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok, degraded]

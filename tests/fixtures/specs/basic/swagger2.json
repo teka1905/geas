@@ -1,0 +1,264 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "Workspace Documents API",
+    "version": "1.0.0"
+  },
+  "basePath": "/api/v1",
+  "consumes": ["application/json"],
+  "produces": ["application/json"],
+  "paths": {
+    "/workspaces/{workspaceId}/documents": {
+      "parameters": [
+        {
+          "name": "workspaceId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "format": "uuid"
+        }
+      ],
+      "get": {
+        "operationId": "listDocuments",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "type": "array",
+            "collectionFormat": "multi",
+            "items": {
+              "type": "string",
+              "enum": ["draft", "review", "published"]
+            }
+          },
+          {
+            "name": "tags",
+            "in": "query",
+            "required": false,
+            "type": "array",
+            "collectionFormat": "csv",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "type": "integer",
+            "format": "int32",
+            "minimum": 1,
+            "maximum": 100
+          },
+          {
+            "name": "includeArchived",
+            "in": "query",
+            "required": false,
+            "type": "boolean"
+          },
+          {
+            "name": "X-Trace-Id",
+            "in": "header",
+            "required": false,
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}$"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Страница документов",
+            "headers": {
+              "X-Request-Id": {
+                "type": "string",
+                "format": "uuid"
+              }
+            },
+            "schema": {"$ref": "#/definitions/DocumentPage"}
+          },
+          "400": {
+            "description": "Некорректный запрос",
+            "schema": {"$ref": "#/definitions/ErrorResponse"}
+          }
+        }
+      },
+      "post": {
+        "operationId": "createDocument",
+        "parameters": [
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {"$ref": "#/definitions/DocumentCreate"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Созданный документ",
+            "schema": {"$ref": "#/definitions/Document"}
+          },
+          "400": {
+            "description": "Некорректный запрос",
+            "schema": {"$ref": "#/definitions/ErrorResponse"}
+          }
+        }
+      }
+    },
+    "/workspaces/{workspaceId}/documents/{documentId}": {
+      "parameters": [
+        {
+          "name": "workspaceId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "format": "uuid"
+        },
+        {
+          "name": "documentId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "format": "uuid"
+        }
+      ],
+      "delete": {
+        "operationId": "deleteDocument",
+        "responses": {
+          "204": {
+            "description": "Документ удалён"
+          },
+          "400": {
+            "description": "Некорректный запрос",
+            "schema": {"$ref": "#/definitions/ErrorResponse"}
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "DocumentBase": {
+      "type": "object",
+      "required": ["title", "slug"],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+$",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "summary": {
+          "type": "string",
+          "x-nullable": true,
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "readOnly": true
+        },
+        "visibility": {
+          "type": "string",
+          "enum": ["private", "workspace", "public"]
+        },
+        "keywords": {
+          "type": "array",
+          "items": {"type": "string"},
+          "maxItems": 10
+        },
+        "labels": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
+        "owner": {"$ref": "#/definitions/Member"},
+        "sections": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/Section"}
+        }
+      }
+    },
+    "Member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "email"],
+      "properties": {
+        "id": {"type": "string", "format": "uuid"},
+        "email": {"type": "string", "format": "email"},
+        "role": {"type": "string", "enum": ["viewer", "editor", "owner"]},
+        "active": {"type": "boolean"}
+      }
+    },
+    "Section": {
+      "type": "object",
+      "required": ["heading"],
+      "properties": {
+        "heading": {"type": "string", "maxLength": 200},
+        "position": {"type": "integer", "minimum": 0, "maximum": 999},
+        "body": {
+          "type": "object",
+          "properties": {
+            "text": {"type": "string"},
+            "format": {"type": "string", "enum": ["plain", "markdown"]}
+          }
+        }
+      }
+    },
+    "Document": {
+      "allOf": [
+        {"$ref": "#/definitions/DocumentBase"},
+        {
+          "type": "object",
+          "required": ["id"],
+          "properties": {
+            "id": {"type": "string", "format": "uuid"},
+            "revision": {"type": "integer", "format": "int64", "minimum": 1},
+            "score": {"type": "number", "format": "double", "minimum": 0, "maximum": 1},
+            "archived": {"type": "boolean"}
+          }
+        }
+      ]
+    },
+    "DocumentCreate": {
+      "allOf": [
+        {"$ref": "#/definitions/DocumentBase"},
+        {
+          "type": "object",
+          "required": ["notifyMembers"],
+          "properties": {
+            "draftSecret": {"type": "string", "minLength": 8},
+            "notifyMembers": {"type": "boolean"}
+          }
+        }
+      ]
+    },
+    "DocumentPage": {
+      "type": "object",
+      "required": ["items", "total"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/Document"}
+        },
+        "total": {"type": "integer", "format": "int64", "minimum": 0},
+        "nextCursor": {"type": "string", "x-nullable": true},
+        "fillRatio": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "ErrorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {"type": "string", "enum": ["invalid_request", "not_found", "conflict"]},
+        "message": {"type": "string", "minLength": 1},
+        "details": {"type": "array", "items": {"type": "string"}},
+        "retryable": {"type": "boolean"}
+      }
+    }
+  }
+}

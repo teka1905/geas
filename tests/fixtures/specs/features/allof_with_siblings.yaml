@@ -1,0 +1,38 @@
+# allOf рядом с собственными type/properties/required: композиция и локальная
+# часть должны учитываться обе, а не вытеснять друг друга.
+openapi: "3.0.3"
+
+info:
+  title: AllOf with siblings fixture
+  version: "1.0.0"
+
+paths:
+  /documents/summary:
+    get:
+      operationId: getDocumentSummary
+      responses:
+        "200":
+          description: Сводка документа
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id]
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                allOf:
+                  - $ref: "#/components/schemas/Timestamps"
+
+components:
+  schemas:
+    Timestamps:
+      type: object
+      properties:
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time

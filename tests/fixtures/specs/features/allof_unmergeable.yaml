@@ -1,0 +1,28 @@
+# allOf, части которого конфликтуют: одноимённое свойство size объявлено
+# и целым, и строкой. Слияние недоказуемо, композиция обязана сохраниться как есть.
+openapi: "3.0.3"
+
+info:
+  title: Unmergeable allOf fixture
+  version: "1.0.0"
+
+paths:
+  /documents/quota:
+    get:
+      operationId: getDocumentQuota
+      responses:
+        "200":
+          description: Квота документа
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    required: [size]
+                    properties:
+                      size:
+                        type: integer
+                  - type: object
+                    properties:
+                      size:
+                        type: string

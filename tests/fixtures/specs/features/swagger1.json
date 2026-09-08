@@ -1,0 +1,31 @@
+{
+  "swagger": "1.2",
+  "info": {
+    "title": "Swagger 1.2 fixture",
+    "version": "1.0.0"
+  },
+  "basePath": "/api",
+  "resourcePath": "/documents",
+  "apis": [
+    {
+      "path": "/documents",
+      "operations": [
+        {
+          "method": "GET",
+          "nickname": "listDocuments",
+          "type": "array",
+          "items": {"$ref": "Document"}
+        }
+      ]
+    }
+  ],
+  "models": {
+    "Document": {
+      "id": "Document",
+      "required": ["title"],
+      "properties": {
+        "title": {"type": "string"}
+      }
+    }
+  }
+}
