@@ -324,15 +324,15 @@ openapi-contracts [-h] [--version] [-m MANIFEST] {init,list,inspect,add,update,c
 from demo.generated import operations
 
 op = operations.ws2.add_ticket
-op.key                   # 'ws2.addTicket'
-op.method                # 'POST'
-op.path                  # '/api/v1/queues/{queueId}/tickets'
-op.request.path          # (ParameterView(name='queueId', ...),)
-op.request.query         # параметры query
-op.request.body()        # RequestBodyView: content_type, required, json_schema, d42_export
-op.responses             # (ResponseView(status=200, content_type='application/json', ...),)
+op.key  # 'ws2.addTicket'
+op.method  # 'POST'
+op.path  # '/api/v1/queues/{queueId}/tickets'
+op.request.path  # (ParameterView(name='queueId', ...),)
+op.request.query  # параметры query
+op.request.body()  # RequestBodyView: content_type, required, json_schema, d42_export
+op.responses  # (ResponseView(status=200, content_type='application/json', ...),)
 op.response(status=200)  # выбор варианта; при единственном варианте аргументы можно опустить
-op.unsupported           # варианты, не представимые контрактом, с причинами
+op.unsupported  # варианты, не представимые контрактом, с причинами
 ```
 
 Валидация вручную, без мока:
@@ -370,7 +370,7 @@ async with operations.ws2.add_ticket.mock(
 ) as mock:
     await page.submit()
 
-assert len(mock.history) == 1          # cardinality-ассерт пишет тест
+assert len(mock.history) == 1  # cardinality-ассерт пишет тест
 ```
 
 Аргументы `mock()`:
@@ -750,7 +750,7 @@ def mocked_post_ticket(body, **kwargs):
 ```
 
 ```python
-async with mocked_post_ticket(body) as mock:   # ни один вызов не переписан
+async with mocked_post_ticket(body) as mock:  # ни один вызов не переписан
     ...
 ```
 

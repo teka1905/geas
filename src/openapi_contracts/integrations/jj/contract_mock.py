@@ -338,10 +338,21 @@ class ContractMock:
 def _attach_note(target: BaseException, secondary: BaseException) -> None:
     """Приложить вторичную диагностику к первичному исключению.
 
-    ``add_note`` есть с Python 3.11; на 3.10 диагностика остаётся доступной через
-    :attr:`ContractMock.diagnostics`.
+    ``BaseException.add_note`` появился в Python 3.11 — там заметка попадает ещё и
+    в печатаемый traceback. На 3.10 ``__notes__`` заполняется вручную: интерпретатор
+    его не отрисует, но программный доступ к диагностике одинаков на всех
+    поддержанных версиях, и тестам не нужно ветвиться по версии Python.
+
+    Дублирующий канал — :attr:`ContractMock.diagnostics`: там лежат сами объекты
+    исключений, а не их текст.
     """
     note = f"[openapi-contract-fixtures] {type(secondary).__name__}: {secondary}"
     add_note = getattr(target, "add_note", None)
     if add_note is not None:
         add_note(note)
+        return
+    notes = getattr(target, "__notes__", None)
+    if isinstance(notes, list):
+        notes.append(note)
+    else:
+        target.__notes__ = [note]  # type: ignore[attr-defined]

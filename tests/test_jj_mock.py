@@ -31,6 +31,7 @@ from openapi_contracts.errors import (
     ResponseContractError,
     ResponseVariantError,
 )
+from openapi_contracts.integrations.jj.contract_mock import _attach_note
 from support import Project, make_project, spec
 
 #: Источник с path-параметром — обычной строкой, без ``format: uuid``.
@@ -616,3 +617,39 @@ async def test_mock_cannot_be_reentered(
     with pytest.raises(ContractMockError, match="повторно"):
         async with mock:
             pass
+
+
+def test_secondary_diagnostics_are_attached_without_add_note() -> None:
+    """Заметки прикладываются и там, где нет ``BaseException.add_note``.
+
+    ``add_note`` появился в Python 3.11, а поддерживается и 3.10. Регрессия
+    ловится именно здесь: на машине с 3.11+ ветка-фолбэк иначе никогда не
+    выполняется, и её поломку заметил бы только CI на 3.10.
+    """
+
+    class WithoutAddNoteError(Exception):
+        """Исключение без ``add_note`` — эмуляция Python 3.10."""
+
+        def __getattribute__(self, name: str) -> Any:
+            if name == "add_note":
+                raise AttributeError(name)
+            return object.__getattribute__(self, name)
+
+    primary = WithoutAddNoteError("основное")
+    _attach_note(primary, ValueError("первая вторичная"))
+    _attach_note(primary, KeyError("вторая вторичная"))
+
+    notes = primary.__notes__  # type: ignore[attr-defined]
+    assert len(notes) == 2
+    assert all(note.startswith("[openapi-contract-fixtures]") for note in notes)
+    assert "ValueError" in notes[0]
+    assert "KeyError" in notes[1]
+
+
+def test_secondary_diagnostics_use_add_note_when_available() -> None:
+    """На Python 3.11+ используется штатный ``add_note`` — заметка видна в traceback."""
+    primary = RuntimeError("основное")
+    _attach_note(primary, ValueError("вторичная"))
+
+    notes = getattr(primary, "__notes__", [])
+    assert any("ValueError" in note for note in notes)

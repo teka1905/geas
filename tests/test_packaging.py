@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -154,8 +155,17 @@ def test_missing_extra_error_names_the_install_command(
 
 
 def _declared_version() -> str:
-    """Версия из ``pyproject.toml`` — источник истины для дистрибутива."""
-    import tomllib
+    """Версия из ``pyproject.toml`` — источник истины для дистрибутива.
 
-    with (REPO_ROOT / "pyproject.toml").open("rb") as handle:
-        return str(tomllib.load(handle)["project"]["version"])
+    ``tomllib`` появился только в Python 3.11, а поддерживается и 3.10, поэтому
+    есть запасной разбор регуляркой: нужна ровно одна строка ``version`` из
+    секции ``[project]``.
+    """
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        match = re.search(r'^version\s*=\s*"([^"]+)"', text, flags=re.MULTILINE)
+        assert match is not None, "в pyproject.toml не найдена версия"
+        return match.group(1)
+    return str(tomllib.loads(text)["project"]["version"])

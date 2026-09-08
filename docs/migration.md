@@ -122,11 +122,13 @@ async def test_ticket_is_created(page):
 Было — схема, переписанная руками целиком:
 
 ```python
-QueueDetailsSchema = schema.dict({
-    "id": schema.int,
-    "name": ValidQueueNameSchema,
-    "groups": schema.list(schema.dict({"title": ValidGroupTitleSchema})),
-})
+QueueDetailsSchema = schema.dict(
+    {
+        "id": schema.int,
+        "name": ValidQueueNameSchema,
+        "groups": schema.list(schema.dict({"title": ValidGroupTitleSchema})),
+    }
+)
 ```
 
 Проблема очевидна: когда бэкенд добавит обязательное поле, эта схема останется
