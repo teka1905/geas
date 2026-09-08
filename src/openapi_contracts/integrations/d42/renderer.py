@@ -74,6 +74,7 @@ _GENERATED_NOTICE = (
 )
 
 _HEADER = "from __future__ import annotations\n\nfrom d42 import optional, schema\n"
+_TYPED_DICT_IMPORT = "from openapi_contracts.integrations.d42.typed_dict import typed_dict\n"
 
 #: Определения и экспорты принимаются и как mapping, и как последовательность пар.
 Definitions = Mapping[str, SchemaNode] | Sequence[tuple[str, SchemaNode]]
@@ -115,7 +116,11 @@ def render_module(
     for plan in export_plans.values():
         _require_known_refs(plan, refs)
 
-    blocks: list[str] = [_docstring(module_docstring), _HEADER]
+    all_plans = [*plans.values(), *export_plans.values()]
+    header = _HEADER
+    if any(_uses_typed_dict(plan) for plan in all_plans):
+        header += _TYPED_DICT_IMPORT
+    blocks: list[str] = [_docstring(module_docstring), header]
     for name in topological_order(plans):
         blocks.append(_assignment(refs[name], plans[name], refs))
     for name in sorted(export_plans):
@@ -204,6 +209,24 @@ def _render(plan: _Plan, refs: Mapping[str, str], *, indent: int, used: int) -> 
     pad = " " * (indent + _INDENT)
     close = " " * indent
     if isinstance(plan, _DictPlan):
+        if plan.additional is not None:
+            base = _DictPlan(entries=plan.entries, open=False)
+            rendered_base = _render(
+                base,
+                refs,
+                indent=indent + _INDENT,
+                used=indent + _INDENT,
+            )
+            rendered_additional = _render(
+                plan.additional,
+                refs,
+                indent=indent + _INDENT,
+                used=indent + _INDENT + len("additional=") + 1,
+            )
+            return (
+                f"typed_dict(\n{pad}{rendered_base},\n"
+                f"{pad}additional={rendered_additional},\n{close})"
+            )
         lines = []
         for name, sub, is_optional in plan.entries:
             key = f"optional({_literal(name)})" if is_optional else _literal(name)
@@ -243,6 +266,9 @@ def _single(plan: _Plan, refs: Mapping[str, str]) -> str:
         for name, sub, is_optional in plan.entries:
             key = f"optional({_literal(name)})" if is_optional else _literal(name)
             items.append(f"{key}: {_single(sub, refs)}")
+        if plan.additional is not None:
+            base = "schema.dict({" + ", ".join(items) + "})"
+            return f"typed_dict({base}, additional={_single(plan.additional, refs)})"
         if plan.open:
             items.append("...: ...")
         return "schema.dict({" + ", ".join(items) + "})"
@@ -250,6 +276,19 @@ def _single(plan: _Plan, refs: Mapping[str, str]) -> str:
         return f"schema.list({_single(plan.items, refs)}){_calls(plan.calls)}"
     variants = ", ".join(_single(variant, refs) for variant in plan.variants)
     return f"schema.any({variants})"
+
+
+def _uses_typed_dict(plan: _Plan) -> bool:
+    """Есть ли типизированный словарь в плане или его дочерних узлах."""
+    if isinstance(plan, _DictPlan):
+        return plan.additional is not None or any(
+            _uses_typed_dict(child) for _, child, _ in plan.entries
+        )
+    if isinstance(plan, _ListPlan):
+        return _uses_typed_dict(plan.items)
+    if isinstance(plan, _UnionPlan):
+        return any(_uses_typed_dict(variant) for variant in plan.variants)
+    return False
 
 
 def _calls(calls: tuple[tuple[str, tuple[Any, ...]], ...]) -> str:

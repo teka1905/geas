@@ -90,8 +90,7 @@ def build_project(root: Path, *, package: str) -> Project:
             "labels": {"path": "api/labels.yaml", "selection": "explicit", "root": "api"},
         },
         operations={
-            # d42 выключен там, где спецификация использует типизированный
-            # additionalProperties: d42 такое не выражает. JSON Schema — работает.
+            # d42 выключен намеренно: этот fixture проверяет JSON Schema и JJ.
             "api.listDocuments": {
                 "source": "main",
                 "operation_id": "listDocuments",

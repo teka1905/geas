@@ -517,14 +517,19 @@ def test_docstring_ending_with_a_backslash_is_rejected() -> None:
         render_module(module_docstring="хвост \\", definitions={}, exports={})
 
 
-def test_unsupported_construct_is_rejected_by_the_renderer_too() -> None:
-    """Рендер идёт от того же плана, поэтому fail closed работает и здесь."""
-    from openapi_contracts.errors import UnsupportedConstructError
+def test_typed_additional_properties_render_and_execute() -> None:
+    """Generated-модуль использует точный custom d42-тип для динамических ключей."""
+    from d42 import ValidationException, validate_or_fail
 
     node = ObjectNode(origin=ORIGIN, additional_properties=StringNode(origin=ORIGIN))
+    source = render_module(module_docstring="d", definitions={}, exports={"S": node})
+    rendered = execute(source)["S"]
 
-    with pytest.raises(UnsupportedConstructError):
-        render_module(module_docstring="d", definitions={}, exports={"S": node})
+    assert "from openapi_contracts.integrations.d42.typed_dict import typed_dict" in source
+    assert rendered == to_d42(node, {})
+    validate_or_fail(rendered, {"dynamic": "ok"})
+    with pytest.raises(ValidationException):
+        validate_or_fail(rendered, {"dynamic": 1})
 
 
 def test_optional_import_is_actually_used_by_generated_modules() -> None:

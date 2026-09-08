@@ -99,8 +99,7 @@ JSON_HEADERS = [("Content-Type", "application/json")]
 def build_project(root: Path, *, package: str) -> Project:
     """Собрать проект-потребитель на четырёх источниках и записать артефакты.
 
-    ``d42`` выключен там, где спецификация содержит типизированный
-    ``additionalProperties`` (``DocumentBase.labels``): d42 такое не выражает, и
+    ``d42`` выключен намеренно: тест изолирует runtime JSON Schema и
     генерация d42-схем для этих операций законно падает. Для runtime это не
     важно — JSON Schema работает независимо.
     """

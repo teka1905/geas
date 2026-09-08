@@ -32,8 +32,7 @@ def build_project(root: Path) -> Project:
     Артефакты генерируются здесь, в обычном окружении: генерация d42-схем сама
     требует extra ``[d42]``. Подпроцесс потом только читает готовое.
 
-    ``api.createDocument`` идёт с ``d42: false`` (типизированный
-    ``additionalProperties`` в фикстуре d42 не выражается), а
+    ``api.createDocument`` идёт с ``d42: false`` (тесту нужен только core), а
     ``api.deleteDocument`` — с включённым d42: на нём проверяется отказ
     ``d42_schema`` без extra.
     """

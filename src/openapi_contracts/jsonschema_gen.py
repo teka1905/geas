@@ -20,6 +20,7 @@ from __future__ import annotations
 from typing import Any
 
 from .models import (
+    INTEGER_FORMAT_BOUNDS,
     AdditionalProperties,
     AllOfNode,
     AnyNode,
@@ -158,10 +159,16 @@ def _scalar(node: SchemaNode, kind: str, extra: dict[str, Any]) -> dict[str, Any
 
 def _numeric_bounds(node: IntegerNode | NumberNode) -> dict[str, Any]:
     bounds: dict[str, Any] = {}
-    if node.minimum is not None:
-        bounds["minimum"] = node.minimum
-    if node.maximum is not None:
-        bounds["maximum"] = node.maximum
+    minimum = node.minimum
+    maximum = node.maximum
+    if isinstance(node, IntegerNode) and node.format in INTEGER_FORMAT_BOUNDS:
+        format_minimum, format_maximum = INTEGER_FORMAT_BOUNDS[node.format]
+        minimum = format_minimum if minimum is None else max(minimum, format_minimum)
+        maximum = format_maximum if maximum is None else min(maximum, format_maximum)
+    if minimum is not None:
+        bounds["minimum"] = minimum
+    if maximum is not None:
+        bounds["maximum"] = maximum
     if node.exclusive_minimum is not None:
         bounds["exclusiveMinimum"] = node.exclusive_minimum
     if node.exclusive_maximum is not None:

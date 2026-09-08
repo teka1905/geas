@@ -33,12 +33,15 @@ from openapi_contracts.integrations.d42.converter import to_d42
 from openapi_contracts.integrations.d42.fixtures import build_fixture
 from openapi_contracts.integrations.d42.overlays import EACH, overlay_generators
 from openapi_contracts.integrations.d42.renderer import render_expression, render_module
+from openapi_contracts.integrations.d42.typed_dict import TypedDictSchema, typed_dict
 
 __all__ = [
     "EACH",
+    "TypedDictSchema",
     "build_fixture",
     "overlay_generators",
     "render_expression",
     "render_module",
     "to_d42",
+    "typed_dict",
 ]

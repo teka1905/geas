@@ -47,9 +47,8 @@ _SOURCES: dict[str, tuple[str, tuple[str, ...]]] = {
     "multi": ("api/multi.yaml", ("features", "multi_content_types.yaml")),
 }
 
-# Операции из basic/ идут с ``d42: false``: схема DocumentBase.labels — это
-# типизированный additionalProperties, который d42 выразить не умеет, и генерация
-# d42 для неё осознанно падает. Здесь проверяются артефакты, а не d42-конвертер.
+# Для операций basic/ d42-рендер отключён, чтобы тестировать только механику
+# артефактов. Сам d42-конвертер покрыт отдельным модулем тестов.
 _LIST = {"source": "main", "operation_id": "listDocuments", "d42": False}
 _CREATE = {"source": "main", "operation_id": "createDocument", "d42": False}
 # Единственная операция с включённым d42 — у неё простые тела без exotics.

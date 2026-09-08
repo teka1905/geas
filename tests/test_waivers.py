@@ -25,6 +25,7 @@ from openapi_contracts.errors import (
     WaiverError,
 )
 from openapi_contracts.fingerprints import semantic_source_digest
+from openapi_contracts.waivers import waiver_source_digest
 from support import Project, make_project, spec
 
 #: Ключ операции из фикстуры ``features/no_type.yaml``.
@@ -454,7 +455,7 @@ def test_unknown_field_in_waiver(tmp_path: Path) -> None:
     ("data", "why"),
     [
         ({"rule": "replace_schema"}, "требует поля 'replacement'"),
-        ({"replacement": {"type": "string"}}, "допустимо только для replace_schema"),
+        ({"replacement": {"type": "string"}}, "допустимо только для правил"),
         ({"rule": "make_it_work"}, "не входит в"),
         ({"direction": "sideways"}, "ожидалось 'request' или 'response'"),
     ],
@@ -530,16 +531,24 @@ def test_duplicate_waiver(tmp_path: Path) -> None:
         project.waivers()
 
 
-def test_two_rules_on_one_scope(tmp_path: Path) -> None:
+def test_compatible_rules_on_one_scope_are_allowed(tmp_path: Path) -> None:
     project = no_type_project(tmp_path / "project")
-    project.write_waivers([waiver(rule="allow_any"), waiver(rule="relax_required")])
+    project.write_waivers([waiver(rule="allow_null"), waiver(rule="relax_required")])
 
-    with pytest.raises(WaiverError) as info:
+    assert len(project.waivers().waivers) == 2
+
+
+def test_schema_replacement_conflicts_with_another_rule_on_same_scope(tmp_path: Path) -> None:
+    project = no_type_project(tmp_path / "project")
+    project.write_waivers(
+        [
+            waiver(rule="replace_schema", replacement={"type": "string"}),
+            waiver(rule="relax_required"),
+        ]
+    )
+
+    with pytest.raises(WaiverError, match="несовместимые правила"):
         project.waivers()
-
-    message = str(info.value)
-    assert "два правила" in message
-    assert "Порядок применения был бы неопределённым" in message
 
 
 def test_same_path_different_variants_is_not_a_conflict(tmp_path: Path) -> None:
@@ -849,3 +858,121 @@ def test_waiver_errors_are_contract_errors(tmp_path: Path) -> None:
 
     with pytest.raises(ContractError):
         project.waivers().validate(project.load(), today=today())
+
+
+# --------------------------------------- исправление дефектных request-моделей
+
+DEFECTIVE_REQUEST = """swagger: "2.0"
+info: {title: Defective request, version: "1.0.0"}
+basePath: /api
+paths:
+  /tickets:
+    post:
+      operationId: addTicket
+      consumes: [application/json]
+      produces: [application/json]
+      parameters:
+        - in: body
+          name: body
+          required: true
+          schema: {$ref: "#/definitions/CreateTicket"}
+      responses:
+        "200":
+          description: ok
+          schema: {type: string}
+definitions:
+  CreateTicket:
+    type: object
+    additionalProperties: false
+    required: [id, kind]
+    properties:
+      id: {type: string, readOnly: true}
+      kind: {type: string, enum: [BASE]}
+      note: {type: string}
+"""
+
+
+def defective_request_project(root: Path) -> Project:
+    """Swagger-проект с типичными дефектами generated request-модели."""
+    return build_project(
+        root,
+        source=DEFECTIVE_REQUEST,
+        operations={"ws.addTicket": {"source": "main", "operation_id": "addTicket"}},
+    )
+
+
+def request_waiver(*, pointer: str, rule: str, expected: str, **extra: Any) -> dict[str, Any]:
+    """Полный waiver для дефектной request-модели."""
+    return {
+        "operation": "ws.addTicket",
+        "direction": "request",
+        "json_pointer": pointer,
+        "rule": rule,
+        "reason": "исходный Swagger неверно описывает фактический запрос",
+        "owner": "team-api",
+        "issue": "BUG-42",
+        "expires_at": in_days(30),
+        "expected_source": expected,
+        **extra,
+    }
+
+
+def test_scoped_request_waivers_repair_defective_swagger(tmp_path: Path) -> None:
+    """Direction, nullable, enum и отсутствующее поле исправляются точечно."""
+    project = defective_request_project(tmp_path / "project")
+    project.write_waivers(
+        [
+            request_waiver(
+                pointer="/body/id",
+                rule="ignore_read_only",
+                expected=waiver_source_digest(
+                    {"type": "string", "readOnly": True}, "ignore_read_only"
+                ),
+            ),
+            request_waiver(
+                pointer="/body/note",
+                rule="allow_null",
+                expected=semantic_source_digest({"type": "string"}),
+            ),
+            request_waiver(
+                pointer="/body/kind",
+                rule="extend_enum",
+                expected=semantic_source_digest({"type": "string", "enum": ["BASE"]}),
+                values=["IN", "OUT"],
+            ),
+            request_waiver(
+                pointer="/body/contentType",
+                rule="add_property",
+                expected=semantic_source_digest(None),
+                replacement={"type": "string", "enum": ["HTML", "PLAIN"]},
+            ),
+        ]
+    )
+
+    schema = project.build().by_key("ws.addTicket").document["request"]["bodies"][0]["schema"]
+
+    assert schema["required"] == ["id", "kind"]
+    assert schema["properties"]["note"]["type"] == ["string", "null"]
+    assert schema["properties"]["kind"]["enum"] == ["BASE", "IN", "OUT"]
+    assert schema["properties"]["contentType"]["enum"] == ["HTML", "PLAIN"]
+    assert "contentType" not in schema["required"]
+
+
+def test_direction_waiver_becomes_unused_after_source_is_fixed(tmp_path: Path) -> None:
+    """После удаления ошибочного readOnly старый waiver обязан сломать генерацию."""
+    project = defective_request_project(tmp_path / "project")
+    project.write_waivers(
+        [
+            request_waiver(
+                pointer="/body/id",
+                rule="ignore_read_only",
+                expected=waiver_source_digest(
+                    {"type": "string", "readOnly": True}, "ignore_read_only"
+                ),
+            )
+        ]
+    )
+    project.write_spec("api/openapi.yaml", DEFECTIVE_REQUEST.replace(", readOnly: true", ""))
+
+    with pytest.raises(WaiverError, match="больше не нужны"):
+        project.build()

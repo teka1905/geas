@@ -29,6 +29,7 @@ from ..errors import UnsupportedConstructError
 from ..fingerprints import semantic_source_digest
 from ..manifest import Policies, UnknownFormatPolicy
 from ..models import (
+    INTEGER_FORMAT_BOUNDS,
     AdditionalProperties,
     AllOfNode,
     AnyNode,
@@ -55,7 +56,7 @@ from ..paths import (
     format_contract_path,
     variant_segment,
 )
-from ..waivers import WaiverRule, WaiverSet
+from ..waivers import WaiverRule, WaiverSet, waiver_source_digest
 from .refs import SpecRegistry
 
 __all__ = ["SUPPORTED_FORMATS", "SchemaDialectConfig", "SchemaNormalizer"]
@@ -327,7 +328,13 @@ class SchemaNormalizer:
 
     # -------------------------------------------------------------- разбор
 
-    def _normalize(self, frame: _Frame, *, allow_replace: bool = True) -> SchemaNode:
+    def _normalize(
+        self,
+        frame: _Frame,
+        *,
+        allow_replace: bool = True,
+        skip_rules: frozenset[WaiverRule] = frozenset(),
+    ) -> SchemaNode:
         if frame.depth > _MAX_DEPTH:
             self._fail(frame, f"глубина схемы превысила {_MAX_DEPTH} — похоже на рекурсию")
         node = frame.node
@@ -351,11 +358,61 @@ class SchemaNormalizer:
                 )
                 return self._normalize(replaced, allow_replace=False)
 
+        adjustments: list[tuple[WaiverRule, Any, Any]] = []
+        for rule, patch in (
+            (WaiverRule.ALLOW_NULL, self._with_nullable_waiver),
+            (WaiverRule.IGNORE_DISCRIMINATOR, self._without_discriminator_waiver),
+            (WaiverRule.EXTEND_ENUM, self._with_extended_enum_waiver),
+        ):
+            if rule in skip_rules:
+                continue
+            waiver = self._consult(rule, frame)
+            if waiver is not None:
+                adjustments.append((rule, patch, waiver))
+        if adjustments:
+            patched = frame
+            for _, patch, waiver in adjustments:
+                patched = _Frame(
+                    node=patch(patched, waiver),
+                    base=frame.base,
+                    origin=frame.origin,
+                    path=frame.path,
+                    depth=frame.depth,
+                )
+            return self._normalize(
+                patched,
+                allow_replace=False,
+                skip_rules=skip_rules | {rule for rule, _, _ in adjustments},
+            )
+
         if "$ref" in node:
             return self._normalize_ref(frame)
 
         self._reject_unknown_keywords(frame, node)
         return self._normalize_inline(frame, node)
+
+    def _with_nullable_waiver(self, frame: _Frame, waiver: Any) -> dict[str, Any]:
+        """Добавить nullable-маркер к закреплённому исходному фрагменту."""
+        if frame.node.get(self._dialect.nullable_key) is True:
+            self._fail(frame, "allow_null больше не нужен: источник уже допускает null")
+        return {**frame.node, self._dialect.nullable_key: True}
+
+    def _without_discriminator_waiver(self, frame: _Frame, waiver: Any) -> dict[str, Any]:
+        """Удалить discriminator только из локальной копии схемы операции."""
+        if "discriminator" not in frame.node:
+            self._fail(frame, "ignore_discriminator больше не нужен: discriminator отсутствует")
+        return {key: value for key, value in frame.node.items() if key != "discriminator"}
+
+    def _with_extended_enum_waiver(self, frame: _Frame, waiver: Any) -> dict[str, Any]:
+        """Дополнить существующий enum литералами из waiver'а."""
+        raw = frame.node.get("enum")
+        if not isinstance(raw, list) or not raw:
+            self._fail(frame, "extend_enum применим только к существующему непустому enum")
+        values = list(raw)
+        for value in waiver.values:
+            if not any(type(value) is type(item) and value == item for item in values):
+                values.append(value)
+        return {**frame.node, "enum": values}
 
     def _reject_unknown_keywords(self, frame: _Frame, node: dict[str, Any]) -> None:
         for key in sorted(node):
@@ -735,7 +792,7 @@ class SchemaNormalizer:
         properties: list[PropertySpec] = []
         for name in sorted(raw_properties):
             raw_property = raw_properties[name]
-            if self._is_pruned(raw_property):
+            if self._is_pruned(frame, name, raw_property):
                 continue
             schema = self._normalize(
                 _Frame(
@@ -751,10 +808,12 @@ class SchemaNormalizer:
                 is_required = False
             properties.append(PropertySpec(name=name, schema=schema, required=is_required))
 
+        properties.extend(self._added_properties(frame, raw_properties))
+
         additional = self._normalize_additional(frame, node)
         return ObjectNode(
             origin=frame.origin,
-            properties=tuple(properties),
+            properties=tuple(sorted(properties, key=lambda item: item.name)),
             additional_properties=additional,
             min_properties=self._int_bound(
                 frame, node.get("minProperties"), keyword="minProperties"
@@ -777,7 +836,50 @@ class SchemaNormalizer:
         )
         return waiver is not None
 
-    def _is_pruned(self, raw_property: Any) -> bool:
+    def _added_properties(
+        self, frame: _Frame, raw_properties: dict[str, Any]
+    ) -> list[PropertySpec]:
+        """Нормализовать свойства, отсутствующие в источнике и добавленные waiver'ами."""
+        added: list[PropertySpec] = []
+        status, content_type = self._variant
+        for waiver in self._waivers.waivers:
+            if (
+                waiver.operation != self._operation_key
+                or waiver.direction != self._direction
+                or waiver.rule is not WaiverRule.ADD_PROPERTY
+                or not waiver.matches_variant(status, content_type)
+                or len(waiver.path) != len(frame.path) + 1
+                or waiver.path[:-1] != frame.path
+            ):
+                continue
+            name = waiver.path[-1]
+            if name in raw_properties:
+                continue
+            used = self._waivers.consult(
+                operation=self._operation_key,
+                direction=self._direction,
+                path=waiver.path,
+                rule=WaiverRule.ADD_PROPERTY,
+                source_digest=semantic_source_digest(None),
+                status=status,
+                content_type=content_type,
+            )
+            if used is None:  # pragma: no cover — найден тот же waiver выше
+                continue
+            schema = self._normalize(
+                _Frame(
+                    node=used.replacement,
+                    base=frame.base,
+                    origin=frame.origin.child("properties", name),
+                    path=waiver.path,
+                    depth=frame.depth + 1,
+                ),
+                allow_replace=False,
+            )
+            added.append(PropertySpec(name=name, schema=schema, required=False))
+        return added
+
+    def _is_pruned(self, frame: _Frame, name: str, raw_property: Any) -> bool:
         """Исключается ли свойство из текущего направления.
 
         ``readOnly`` смотрится и в самой схеме свойства, и рядом с ``$ref``:
@@ -786,10 +888,30 @@ class SchemaNormalizer:
         """
         if not isinstance(raw_property, dict):
             return False
-        if self._direction is Direction.REQUEST:
-            return bool(raw_property.get("readOnly", False))
-        if self._dialect.supports_write_only:
-            return bool(raw_property.get("writeOnly", False))
+        keyword: str | None = None
+        rule: WaiverRule | None = None
+        if self._direction is Direction.REQUEST and raw_property.get("readOnly", False):
+            keyword = "readOnly"
+            rule = WaiverRule.IGNORE_READ_ONLY
+        elif (
+            self._direction is Direction.RESPONSE
+            and self._dialect.supports_write_only
+            and raw_property.get("writeOnly", False)
+        ):
+            keyword = "writeOnly"
+            rule = WaiverRule.IGNORE_WRITE_ONLY
+        if keyword is not None and rule is not None:
+            status, content_type = self._variant
+            waiver = self._waivers.consult(
+                operation=self._operation_key,
+                direction=self._direction,
+                path=(*frame.path, name),
+                rule=rule,
+                source_digest=waiver_source_digest(raw_property, rule),
+                status=status,
+                content_type=content_type,
+            )
+            return waiver is None
         return False
 
     def _normalize_additional(
@@ -872,9 +994,15 @@ class SchemaNormalizer:
             enum = tuple(self._enum_of(frame, enum_values, int, "целых"))
         minimum, exclusive_minimum = self._bounds(frame, node, "minimum", "exclusiveMinimum")
         maximum, exclusive_maximum = self._bounds(frame, node, "maximum", "exclusiveMaximum")
+        integer_format = self._check_format(frame, node, "integer")
+        format_bounds = INTEGER_FORMAT_BOUNDS.get(integer_format or "")
+        if format_bounds is not None:
+            format_minimum, format_maximum = format_bounds
+            minimum = format_minimum if minimum is None else max(minimum, format_minimum)
+            maximum = format_maximum if maximum is None else min(maximum, format_maximum)
         return IntegerNode(
             origin=frame.origin,
-            format=self._check_format(frame, node, "integer"),
+            format=integer_format,
             enum=enum,
             minimum=self._int_bound(frame, minimum, keyword="minimum"),
             maximum=self._int_bound(frame, maximum, keyword="maximum"),

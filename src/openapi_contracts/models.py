@@ -24,6 +24,7 @@ from enum import Enum
 from typing import Union
 
 __all__ = [
+    "INTEGER_FORMAT_BOUNDS",
     "STATUS_DEFAULT",
     "AdditionalProperties",
     "AllOfNode",
@@ -54,6 +55,12 @@ __all__ = [
 ]
 
 JsonValue = Union[None, bool, int, float, str, "list[JsonValue]", "dict[str, JsonValue]"]
+
+#: Точные диапазоны целочисленных форматов OpenAPI.
+INTEGER_FORMAT_BOUNDS: dict[str, tuple[int, int]] = {
+    "int32": (-(2**31), 2**31 - 1),
+    "int64": (-(2**63), 2**63 - 1),
+}
 
 #: Псевдо-статус для ``responses.default``.
 STATUS_DEFAULT = "default"

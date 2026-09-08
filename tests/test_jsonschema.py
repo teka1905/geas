@@ -60,6 +60,23 @@ def test_nullable_scalar_becomes_a_type_union() -> None:
     assert _schema(StringNode(origin=ORIGIN, nullable=True))["type"] == ["string", "null"]
 
 
+@pytest.mark.parametrize(
+    ("format_name", "minimum", "maximum"),
+    [
+        ("int32", -(2**31), 2**31 - 1),
+        ("int64", -(2**63), 2**63 - 1),
+    ],
+)
+def test_integer_formats_become_explicit_json_schema_bounds(
+    format_name: str, minimum: int, maximum: int
+) -> None:
+    """jsonschema не проверяет int32/int64 как format, поэтому границы явные."""
+    generated = _schema(IntegerNode(origin=ORIGIN, format=format_name))
+
+    assert generated["minimum"] == minimum
+    assert generated["maximum"] == maximum
+
+
 def test_nullable_enum_gains_null() -> None:
     """У nullable-enum ``null`` обязан появиться и в ``enum``, иначе он невалиден."""
     schema = _schema(StringNode(origin=ORIGIN, nullable=True, enum=("a", "b")))

@@ -33,9 +33,8 @@ from support import Project, make_project, spec
 #: Ключ операции, на которой гоняется большинство проверок.
 KEY = "api.createDocument"
 
-# ``d42: false`` — в схеме DocumentBase есть типизированный additionalProperties,
-# который d42 выразить не умеет. Для diff это не важно: сравниваются документы
-# контрактов, а не d42-модули.
+# ``d42: false`` оставляет тест сфокусированным на документах контрактов, а не
+# на generated d42-модулях.
 _OPERATION = {"source": "main", "operation_id": "createDocument", "d42": False}
 
 

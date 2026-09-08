@@ -228,10 +228,10 @@ def test_d42_is_disabled_with_a_reason_when_it_cannot_express_the_contract(
 ) -> None:
     """Невыразимая в d42 конструкция отключает d42 точечно, а не роняет операцию.
 
-    Типизированный ``additionalProperties`` точно выражается контрактом и JSON
-    Schema, но не выражается в d42. Ронять из-за этого всю операцию было бы
-    неправильно: ядро не обязано зависеть от опциональной интеграции. Причина
-    обязана быть записана в артефакт и всплыть при обращении к d42-схеме.
+    В тестовой спецификации остаётся невыразимое сочетание ``pattern`` и границ
+    длины. Ронять из-за этого всю операцию было бы неправильно: ядро не обязано
+    зависеть от опциональной интеграции. Причина обязана быть записана в артефакт
+    и всплыть при обращении к d42-схеме.
     """
     project = make_project(tmp_path / "project")
     project.write_spec("api/spec.yaml", spec("basic", "openapi30.yaml"))
@@ -244,7 +244,7 @@ def test_d42_is_disabled_with_a_reason_when_it_cannot_express_the_contract(
     assert dict(artifacts.d42_disabled).get("api.createDocument")
     document = project.contract_document("api__create_document")
     assert document["d42"]["enabled"] is False
-    assert "additionalProperties" in document["d42"]["reason"]
+    assert "pattern" in document["d42"]["reason"]
     assert any("d42:" in item for item in document["unsupported"])
     assert not (project.output_dir / "_d42").exists()
 
@@ -253,4 +253,4 @@ def test_d42_is_disabled_with_a_reason_when_it_cannot_express_the_contract(
         assert handle.response(status=200).d42_export is None
         with pytest.raises(Exception) as info:
             handle.d42_schema(Direction.RESPONSE, export="GeneratedAnythingSchema")
-        assert "additionalProperties" in str(info.value)
+        assert "pattern" in str(info.value)
