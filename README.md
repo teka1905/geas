@@ -383,6 +383,7 @@ assert len(mock.history) == 1  # cardinality-ассерт пишет тест
 | `path_params` | закрепляемые сегменты маршрута; проверяются по схеме параметра |
 | `query_params` | сузить matcher по query-параметрам |
 | `headers` | сузить matcher по заголовкам **запроса** |
+| `history_callback` | вызвать consumer-hook после получения history и cleanup, например для Allure-вложения |
 | `response_headers` | заголовки ответа; `Content-Type` подставляется из контракта, если не задан |
 | `wait_for_requests` | сколько запросов дождаться перед выходом из блока |
 | `timeout` | таймаут ожидания, секунды (по умолчанию `5.0`) |

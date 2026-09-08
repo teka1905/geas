@@ -34,7 +34,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
@@ -60,6 +60,7 @@ class ContractMock:
         "_entered",
         "_headers",
         "_history",
+        "_history_callback",
         "_mocked",
         "_operation",
         "_path_params",
@@ -82,6 +83,7 @@ class ContractMock:
         query_params: Mapping[str, Any] | None = None,
         headers: Mapping[str, Any] | None = None,
         response_headers: Mapping[str, str] | None = None,
+        history_callback: Callable[[Sequence[Any]], None] | None = None,
         wait_for_requests: int | None = None,
         timeout: float = 5.0,
     ) -> None:
@@ -91,9 +93,10 @@ class ContractMock:
         self._query_params = dict(query_params or {})
         self._headers = dict(headers or {})
         self._response_headers = dict(response_headers or {})
+        self._history_callback = history_callback
         self._wait_for_requests = wait_for_requests
         self._timeout = timeout
-        self._history: tuple[Any, ...] = ()
+        self._history: list[Any] = []
         self._diagnostics: tuple[BaseException, ...] = ()
         self._entered = False
         self._mocked: Any = None
@@ -241,7 +244,13 @@ class ContractMock:
         except BaseException as error:
             secondary.append(error)
 
-        self._history = tuple(self._mocked.history or ())
+        self._history = list(self._mocked.history or ())
+
+        if self._history_callback is not None:
+            try:
+                self._history_callback(self._history)
+            except BaseException as error:
+                secondary.append(error)
 
         if (
             exc is None
@@ -278,8 +287,8 @@ class ContractMock:
     # ---------------------------------------------------------------- данные
 
     @property
-    def history(self) -> tuple[Any, ...]:
-        """История перехваченных обменов. Доступна после выхода из блока."""
+    def history(self) -> list[Any]:
+        """История перехваченных обменов в совместимом с JJ формате list."""
         return self._history
 
     @property
