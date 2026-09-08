@@ -51,6 +51,9 @@ checked-in OpenAPI-спецификаций.
   декоративного `format` без проверки границ.
 - **Безопасный dependency extra `jsonschema[format-nongpl]`** и модульная точка
   входа `python -m openapi_contracts`.
+- **Совместимая с JJ история в виде `list`** и необязательный
+  `history_callback` для интеграции с отчётами потребителя без зависимости от
+  конкретного test framework.
 
 ### Ограничения
 

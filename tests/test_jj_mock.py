@@ -167,7 +167,7 @@ async def test_mock_answers_with_contract_response(
         wait_for_requests=1,
     ) as mock:
         # До выхода из блока история ещё не забрана — это часть контракта класса.
-        assert mock.history == ()
+        assert mock.history == []
         status, content_type, raw = await send(jj_server, "POST", DOCUMENTS_PATH, json=CREATE_BODY)
 
     assert status == 200
@@ -182,6 +182,26 @@ async def test_mock_answers_with_contract_response(
     assert request.method == "POST"
     assert request.path == DOCUMENTS_PATH
     assert request.body == CREATE_BODY
+
+
+async def test_history_callback_runs_after_history_is_fetched(
+    jj_server: JJServer,  # noqa: F811 - фикстура
+    operations: Any,
+) -> None:
+    """Потребитель может приложить историю в свой отчёт без зависимости core от фреймворка."""
+    captured: list[list[Any]] = []
+
+    async with operations.api.create_document.mock(
+        response=DOCUMENT,
+        status=200,
+        path_params={"workspaceId": WORKSPACE_ID},
+        wait_for_requests=1,
+        history_callback=lambda history: captured.append(list(history)),
+    ) as mock:
+        await send(jj_server, "POST", DOCUMENTS_PATH, json=CREATE_BODY)
+
+    assert captured == [mock.history]
+    assert isinstance(mock.history, list)
 
 
 async def test_mock_records_query_parameters(
