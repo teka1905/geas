@@ -1,0 +1,42 @@
+{
+  "artifact_format": 1,
+  "digests": {
+    "__init__.py": "e5db3fe3e1ffa94964389989f695aaaabe2eff106e82f73295fa521e69ef664c",
+    "_d42/__init__.py": "7d71a4a79927f1ba5c9a3af9b9e14e2f3ef2dba82b20566e006dfc3c207cd3e1",
+    "_d42/api__create_document_request.py": "9e2b519573a8766af8b67f5e36a8724e2dfe7e21b02b66e03a08effdf104f99c",
+    "_d42/api__create_document_response.py": "8d707a11bf48d11d15342222a44ee3e0b110ffe93ada3fbc3f299f0775b3f755",
+    "_d42/api__list_documents_response.py": "25eddb96de944d7b47159871735f10ab33870b1667f982b6a9ebe5e2b96c362b",
+    "_registry.py": "afba77374bb0f4fc3a084cab04ddb20a768a52378bfc06f594db1811dd7c95bc",
+    "contracts/api__create_document.json": "eea296c47f6dbb4b34e00e4e2f2eb522971ad7a79f2d9c50079b13cb12c412f2",
+    "contracts/api__list_documents.json": "7b8428f13db5f426cbfcb18fc7d97ae171d8bfc343a937f4011638933aefe114",
+    "operations.py": "2f91acf5c3d8573bf966004db7521037920f166d4c15a20c6eabd18a7f0829ee"
+  },
+  "fingerprint": "f3aec2d11665859414f3f5baf8bd1250f8fbfe663a656e246944505f51951877",
+  "generator": "0.1.0",
+  "operations": {
+    "api.createDocument": {
+      "fingerprint": "4a642ea837a5b29b3ad5df9e303445b7f57fc9340e95d4970774c1d3580a0797",
+      "slug": "api__create_document"
+    },
+    "api.listDocuments": {
+      "fingerprint": "d8f219a3aeec1b57e8c1921bc3b67e57b247dc706bea97d8156d4110b6ccfb46",
+      "slug": "api__list_documents"
+    }
+  },
+  "output": {
+    "directory": "app_contracts/generated",
+    "package": "app_contracts.generated"
+  },
+  "owned": [
+    "__init__.py",
+    "_d42/__init__.py",
+    "_d42/api__create_document_request.py",
+    "_d42/api__create_document_response.py",
+    "_d42/api__list_documents_response.py",
+    "_generated.json",
+    "_registry.py",
+    "contracts/api__create_document.json",
+    "contracts/api__list_documents.json",
+    "operations.py"
+  ]
+}

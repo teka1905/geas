@@ -1,0 +1,116 @@
+{
+  "artifact": {
+    "kind": "operation-contract",
+    "version": 1
+  },
+  "d42": {
+    "enabled": true,
+    "recursive": false,
+    "request_module": null,
+    "response_module": "api__list_documents_response"
+  },
+  "dialect": "openapi30",
+  "key": "api.listDocuments",
+  "method": "GET",
+  "operation_id": "listDocuments",
+  "path": "/api/v1/workspaces/{workspaceId}/documents",
+  "python_path": [
+    "api",
+    "list_documents"
+  ],
+  "request": {
+    "bodies": [],
+    "parameters": [
+      {
+        "explode": false,
+        "in": "path",
+        "name": "workspaceId",
+        "required": true,
+        "schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "minLength": 1,
+          "type": "string"
+        },
+        "style": "simple"
+      },
+      {
+        "explode": true,
+        "in": "query",
+        "name": "limit",
+        "required": false,
+        "schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "style": "form"
+      }
+    ]
+  },
+  "responses": [
+    {
+      "content_type": "application/json",
+      "d42": "GeneratedDocumentPageSchema",
+      "headers": [],
+      "schema": {
+        "$defs": {
+          "Document": {
+            "properties": {
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "title": {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              "visibility": {
+                "enum": [
+                  "private",
+                  "workspace",
+                  "public"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "visibility"
+            ],
+            "type": "object"
+          },
+          "DocumentPage": {
+            "properties": {
+              "items": {
+                "items": {
+                  "$ref": "#/$defs/Document"
+                },
+                "maxItems": 3,
+                "minItems": 1,
+                "type": "array"
+              },
+              "total": {
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "items",
+              "total"
+            ],
+            "type": "object"
+          }
+        },
+        "$ref": "#/$defs/DocumentPage",
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      },
+      "status": 200
+    }
+  ],
+  "slug": "api__list_documents",
+  "source": "main",
+  "unsupported": []
+}

@@ -1,0 +1,107 @@
+# Спецификация вымышленного сервиса, на которой построен пример-потребитель.
+#
+# Домен придуман целиком: workspace (рабочее пространство) содержит documents
+# (документы). Никаких реальных сервисов, маршрутов и идентификаторов здесь нет.
+#
+# Файл маленький намеренно: пример показывает рабочий процесс, а не полноту
+# поддержки OpenAPI. Всё, что здесь есть, попадает в generated-артефакты рядом,
+# в app_contracts/generated.
+openapi: "3.0.3"
+
+info:
+  title: Workspace Documents API
+  version: "1.0.0"
+
+paths:
+  /api/v1/workspaces/{workspaceId}/documents:
+    # Параметр уровня Path Item: виден обеим операциям маршрута.
+    parameters:
+      - name: workspaceId
+        in: path
+        required: true
+        description: Идентификатор рабочего пространства
+        schema:
+          type: string
+          minLength: 1
+
+    get:
+      operationId: listDocuments
+      summary: Страница документов рабочего пространства
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Сколько документов вернуть
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        "200":
+          description: Страница документов
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentPage"
+
+    post:
+      operationId: createDocument
+      summary: Создать документ
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DocumentDraft"
+      responses:
+        "201":
+          description: Документ создан
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Document"
+
+components:
+  schemas:
+    Document:
+      type: object
+      required: [id, title, visibility]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        visibility:
+          type: string
+          enum: [private, workspace, public]
+
+    DocumentDraft:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        visibility:
+          type: string
+          enum: [private, workspace, public]
+
+    DocumentPage:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          # Границы длины заданы намеренно: сгенерированная фикстура всегда
+          # непустая, и overlay с EACH видно на глаз.
+          minItems: 1
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/Document"
+        total:
+          type: integer
+          minimum: 0

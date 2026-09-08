@@ -1,0 +1,115 @@
+{
+  "artifact": {
+    "kind": "operation-contract",
+    "version": 1
+  },
+  "d42": {
+    "enabled": true,
+    "recursive": false,
+    "request_module": "api__create_document_request",
+    "response_module": "api__create_document_response"
+  },
+  "dialect": "openapi30",
+  "key": "api.createDocument",
+  "method": "POST",
+  "operation_id": "createDocument",
+  "path": "/api/v1/workspaces/{workspaceId}/documents",
+  "python_path": [
+    "api",
+    "create_document"
+  ],
+  "request": {
+    "bodies": [
+      {
+        "content_type": "application/json",
+        "d42": "GeneratedDocumentDraftSchema",
+        "required": true,
+        "schema": {
+          "$defs": {
+            "DocumentDraft": {
+              "properties": {
+                "title": {
+                  "maxLength": 120,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "visibility": {
+                  "enum": [
+                    "private",
+                    "workspace",
+                    "public"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "title"
+              ],
+              "type": "object"
+            }
+          },
+          "$ref": "#/$defs/DocumentDraft",
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        }
+      }
+    ],
+    "parameters": [
+      {
+        "explode": false,
+        "in": "path",
+        "name": "workspaceId",
+        "required": true,
+        "schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "minLength": 1,
+          "type": "string"
+        },
+        "style": "simple"
+      }
+    ]
+  },
+  "responses": [
+    {
+      "content_type": "application/json",
+      "d42": "GeneratedDocumentSchema",
+      "headers": [],
+      "schema": {
+        "$defs": {
+          "Document": {
+            "properties": {
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "title": {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              "visibility": {
+                "enum": [
+                  "private",
+                  "workspace",
+                  "public"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "visibility"
+            ],
+            "type": "object"
+          }
+        },
+        "$ref": "#/$defs/Document",
+        "$schema": "https://json-schema.org/draft/2020-12/schema"
+      },
+      "status": 201
+    }
+  ],
+  "slug": "api__create_document",
+  "source": "main",
+  "unsupported": []
+}

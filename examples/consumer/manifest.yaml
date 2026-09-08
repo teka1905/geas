@@ -1,0 +1,66 @@
+# Manifest примера-потребителя.
+#
+# Все пути разрешаются относительно каталога этого файла, поэтому пример
+# переносим: скопируйте examples/consumer куда угодно, и команды продолжат
+# работать без правок.
+#
+#   openapi-contracts -m manifest.yaml list      # что вообще есть в источнике
+#   openapi-contracts -m manifest.yaml update    # перегенерировать артефакты
+#   openapi-contracts -m manifest.yaml check     # это и ставится в CI
+version: 1
+
+output:
+  directory: app_contracts/generated
+  package: app_contracts.generated
+
+waivers: waivers.yaml
+
+policies:
+  # Максимальный срок жизни waiver'а. Здесь ничем не отличается от значения по
+  # умолчанию, но записан явно: политика — часть договорённостей команды.
+  waiver_max_days: 90
+  # Неизвестный format — ошибка генерации, а не молчаливое ослабление контракта.
+  unknown_formats: reject
+
+sources:
+  main:
+    path: api/openapi.yaml
+    # explicit: генерируются только операции из блока operations ниже.
+    # Новая ручка в спецификации не попадает в артефакты сама по себе — её
+    # добавляют осознанно командой 'openapi-contracts add'.
+    selection: explicit
+
+operations:
+  api.listDocuments:
+    source: main
+    operation_id: listDocuments
+    method: GET
+    path: /api/v1/workspaces/{workspaceId}/documents
+    responses:
+      - status: 200
+        content_type: application/json
+    # Публичное имя в generated namespace: operations.api.list_documents.
+    # Оно строится из ключа, а не из operationId, поэтому переименование
+    # operationId на бэкенде ломает binding, но не ломает код тестов.
+    python_path: [api, list_documents]
+
+  api.createDocument:
+    source: main
+    operation_id: createDocument
+    method: POST
+    path: /api/v1/workspaces/{workspaceId}/documents
+    request:
+      content_type: application/json
+    responses:
+      - status: 201
+        content_type: application/json
+    python_path: [api, create_document]
+    # Свойства, которые нельзя ослабить никаким waiver'ом: если из ответа
+    # пропадёт обязательный id или у visibility опустеет enum, генерация упадёт.
+    non_waivable:
+      - direction: response
+        json_pointer: /id
+        rules: [required, non_null]
+      - direction: response
+        json_pointer: /visibility
+        rules: [required, non_empty_enum]
