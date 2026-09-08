@@ -19,7 +19,7 @@
 | [`tests/test_documents.py`](tests/test_documents.py) | человек | тесты, ради которых всё затевалось |
 
 Каталог `app_contracts/generated/` **закоммичен целиком**. Это принципиально:
-generated-код читается в code review, а `openapi-contracts check` в CI падает,
+generated-код читается в code review, а `geas check` в CI падает,
 если он разошёлся со спецификацией. Ничего не генерируется «на лету» во время
 прогона тестов.
 
@@ -29,21 +29,21 @@ generated-код читается в code review, а `openapi-contracts check` �
 cd examples/consumer
 
 # что вообще есть в источнике и что из этого выбрано manifest
-openapi-contracts -m manifest.yaml list
+geas -m manifest.yaml list
 
 # добавить в allowlist операцию, которая появилась в спецификации
 # (транзакционно: manifest меняется, только если операция полностью собралась)
-openapi-contracts -m manifest.yaml add api.archiveDocument \
+geas -m manifest.yaml add api.archiveDocument \
     --source main --operation-id archiveDocument --response 204
 
 # перегенерировать артефакты и закоммитить их
-openapi-contracts -m manifest.yaml update
+geas -m manifest.yaml update
 
 # это ставится в CI: молча выходит с 0, если артефакты актуальны, и с 1, если нет
-openapi-contracts -m manifest.yaml check
+geas -m manifest.yaml check
 
 # что именно изменилось в контракте (косметика отделена от семантики)
-openapi-contracts -m manifest.yaml diff
+geas -m manifest.yaml diff
 ```
 
 ## Как запустить тесты примера
@@ -62,7 +62,7 @@ JJ_REMOTE_MOCK_URL=http://127.0.0.1:8080 \
 [`conftest.py`](conftest.py) — в настоящем проекте этого файла не будет, там
 `app_contracts` и так свой пакет.
 
-Зависимости примера: `openapi-contract-fixtures[d42,jj]` и любой HTTP-клиент
+Зависимости примера: `geas[d42,jj]` и любой HTTP-клиент
 (здесь — `aiohttp`, он и так приезжает вместе с `jj`).
 
 То же самое, но автоматически, делает
@@ -159,6 +159,6 @@ assert dict(request.params)["limit"] == "3"
   waiver'ом однажды перестал бы собираться. Формат waiver'а описан комментарием
   в [`waivers.yaml`](waivers.yaml).
 * **Генерации во время прогона тестов.** Артефакты — часть репозитория.
-* **Импортов из `openapi_contracts.integrations.*` глубже публичных точек
-  входа.** Тест примера использует только `openapi_contracts` и
-  `openapi_contracts.integrations.d42`.
+* **Импортов из `geas.integrations.*` глубже публичных точек
+  входа.** Тест примера использует только `geas` и
+  `geas.integrations.d42`.

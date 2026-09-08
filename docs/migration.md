@@ -14,7 +14,7 @@
 ```toml
 # pyproject.toml тестового проекта
 dependencies = [
-    "openapi-contract-fixtures[d42,jj]",
+    "geas[d42,jj]",
 ]
 ```
 
@@ -30,7 +30,7 @@ JSON Schema, CLI, `check` в CI) работает и без них.
 ### 3. Завести manifest
 
 ```bash
-openapi-contracts -m contracts/manifest.yaml init \
+geas -m contracts/manifest.yaml init \
   --source ../api/openapi.yaml \
   --package myproject.contracts.generated \
   --directory ../myproject/contracts/generated
@@ -43,10 +43,10 @@ generated-артефакты попадают только те операции
 ### 4. Перенести первую операцию
 
 ```bash
-openapi-contracts -m contracts/manifest.yaml list
-openapi-contracts -m contracts/manifest.yaml add ws2.addTicket \
+geas -m contracts/manifest.yaml list
+geas -m contracts/manifest.yaml add ws2.addTicket \
     --source main --operation-id addTicket
-openapi-contracts -m contracts/manifest.yaml update
+geas -m contracts/manifest.yaml update
 ```
 
 `add` транзакционен: если конструкция не поддержана, manifest останется
@@ -70,7 +70,7 @@ async def mocked_post_ticket(response_body: dict, wait_for_requests: int = 1):
 ```python
 # mocks/tickets.py
 from myproject.contracts.generated import operations
-from openapi_contracts.integrations.jj import ContractMock
+from geas.integrations.jj import ContractMock
 
 
 def mocked_post_ticket(response_body: dict, wait_for_requests: int = 1) -> ContractMock:
@@ -137,7 +137,7 @@ QueueDetailsSchema = schema.dict(
 Стало — generated-контракт с подменёнными **генераторами листьев**:
 
 ```python
-from openapi_contracts.integrations.d42 import EACH, overlay_generators
+from geas.integrations.d42 import EACH, overlay_generators
 from myproject.contracts.generated._d42.v2__get_queue_response import (
     GeneratedTicketQueueDtoSchema,
 )
@@ -159,7 +159,7 @@ QueueDetailsSchema = overlay_generators(
 
 ```yaml
 - name: Контракты соответствуют спецификации
-  run: openapi-contracts -m contracts/manifest.yaml check
+  run: geas -m contracts/manifest.yaml check
 ```
 
 Команда ничего не меняет в рабочем дереве и падает с кодом `1`, если
@@ -201,6 +201,6 @@ extend-exclude = ["**/contracts/generated/**"]
 ## Порядок подключения нескольких проектов
 
 Подключайте по одному проекту и по одной операции. Признак, что шаг сделан
-правильно: `openapi-contracts check` зелёный, тесты проходят без изменений в
+правильно: `geas check` зелёный, тесты проходят без изменений в
 call sites, а в diff видно только появление generated-артефактов и превращение
 `mocked_*` в обёртку.

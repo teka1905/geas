@@ -517,7 +517,7 @@ def load_waivers(path: Path | str) -> WaiverSet:
 
 
 def empty_waivers_document() -> str:
-    """Пустой ``waivers.yaml``, который создаёт ``openapi-contracts init``."""
+    """Пустой ``waivers.yaml``, который создаёт ``geas init``."""
     return yaml.safe_dump(
         {"version": WAIVERS_VERSION, "waivers": []},
         allow_unicode=True,

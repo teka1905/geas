@@ -1,9 +1,9 @@
 """Рендер IR → исходник модуля со схемами d42.
 
 Главное утверждение файла — **анти-дрейф**: текст, который печатает
-:func:`~openapi_contracts.integrations.d42.renderer.render_module`, после ``exec``
+:func:`~geas.integrations.d42.renderer.render_module`, после ``exec``
 даёт схемы, равные (``==``) результату
-:func:`~openapi_contracts.integrations.d42.converter.to_d42` для тех же узлов IR.
+:func:`~geas.integrations.d42.converter.to_d42` для тех же узлов IR.
 Если однажды в рендере заведётся ветка «только для текста», закоммиченный
 артефакт разойдётся с тем, что библиотека проверяет в рантайме, и тест обязан
 упасть первым.
@@ -28,18 +28,18 @@ from typing import Any
 import pytest
 from d42 import optional, schema
 
-from openapi_contracts.errors import (
+from geas.errors import (
     ArtifactError,
     NamespaceCollisionError,
     RefResolutionError,
 )
-from openapi_contracts.integrations.d42.converter import to_d42
-from openapi_contracts.integrations.d42.renderer import (
+from geas.integrations.d42.converter import to_d42
+from geas.integrations.d42.renderer import (
     LINE_LENGTH,
     render_expression,
     render_module,
 )
-from openapi_contracts.models import (
+from geas.models import (
     AdditionalProperties,
     ArrayNode,
     BooleanNode,
@@ -309,8 +309,8 @@ def test_rendering_is_stable_across_hash_seeds(hash_seed: str, tmp_path: Path) -
     """
     code = textwrap.dedent(
         """
-        from openapi_contracts.integrations.d42.renderer import render_module
-        from openapi_contracts.models import (
+        from geas.integrations.d42.renderer import render_module
+        from geas.models import (
             AdditionalProperties, ArrayNode, IntegerNode, ObjectNode, Origin,
             PropertySpec, RefNode, StringNode,
         )
@@ -525,7 +525,7 @@ def test_typed_additional_properties_render_and_execute() -> None:
     source = render_module(module_docstring="d", definitions={}, exports={"S": node})
     rendered = execute(source)["S"]
 
-    assert "from openapi_contracts.integrations.d42.typed_dict import typed_dict" in source
+    assert "from geas.integrations.d42.typed_dict import typed_dict" in source
     assert rendered == to_d42(node, {})
     validate_or_fail(rendered, {"dynamic": "ok"})
     with pytest.raises(ValidationException):

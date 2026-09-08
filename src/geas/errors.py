@@ -230,8 +230,7 @@ class MissingExtraError(ContractError, ImportError):
         self.extra = extra
         self.feature = feature
         super().__init__(
-            f"{feature} требует опциональной зависимости. "
-            f"Установите: pip install 'openapi-contract-fixtures[{extra}]'"
+            f"{feature} требует опциональной зависимости. Установите: pip install 'geas[{extra}]'"
         )
 
 

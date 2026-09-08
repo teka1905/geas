@@ -1,4 +1,4 @@
-"""Конвертер IR → живые схемы d42 (:mod:`openapi_contracts.integrations.d42.converter`).
+"""Конвертер IR → живые схемы d42 (:mod:`geas.integrations.d42.converter`).
 
 Файл закрепляет два класса утверждений.
 
@@ -21,14 +21,14 @@ from dataclasses import dataclass
 import pytest
 from d42 import ValidationException, optional, schema, validate_or_fail
 
-from openapi_contracts.errors import (
+from geas.errors import (
     ContractError,
     RecursiveSchemaError,
     RefResolutionError,
     UnsupportedConstructError,
 )
-from openapi_contracts.integrations.d42.converter import to_d42
-from openapi_contracts.models import (
+from geas.integrations.d42.converter import to_d42
+from geas.models import (
     AdditionalProperties,
     AllOfNode,
     AnyNode,

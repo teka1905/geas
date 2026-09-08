@@ -1,6 +1,6 @@
 """Generated-артефакты: детерминированность, учёт owned-файлов, drift и безопасность записи.
 
-Проверяется три обещания модуля :mod:`openapi_contracts.artifacts`:
+Проверяется три обещания модуля :mod:`geas.artifacts`:
 
 1. **детерминированность** — повторный рендер даёт байт-в-байт тот же результат,
    в тексте нет ни времени, ни абсолютных путей, ни случайных значений, а
@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from openapi_contracts.artifacts import (
+from geas.artifacts import (
     ARTIFACT_FORMAT_VERSION,
     GENERATED_INDEX,
     Artifact,
@@ -37,7 +37,7 @@ from openapi_contracts.artifacts import (
     render_artifacts,
     write_artifacts,
 )
-from openapi_contracts.errors import ArtifactError, NamespaceCollisionError
+from geas.errors import ArtifactError, NamespaceCollisionError
 from support import SRC_ROOT, Project, make_project, spec
 
 # Источники, из которых собираются демо-проекты: имя в manifest → (путь внутри
@@ -113,10 +113,10 @@ def test_render_artifacts_does_not_depend_on_hash_seed(tmp_path: Path) -> None:
     project = demo_project(tmp_path / "workspace", _FULL_OPERATIONS)
     code = (
         "import json\n"
-        "from openapi_contracts.artifacts import render_artifacts\n"
-        "from openapi_contracts.contracts import build_contracts\n"
-        "from openapi_contracts.manifest import load_manifest\n"
-        "from openapi_contracts.waivers import load_waivers\n"
+        "from geas.artifacts import render_artifacts\n"
+        "from geas.contracts import build_contracts\n"
+        "from geas.manifest import load_manifest\n"
+        "from geas.waivers import load_waivers\n"
         f"manifest = load_manifest({str(project.manifest_path)!r})\n"
         f"waivers = load_waivers({str(project.waivers_path)!r})\n"
         "artifacts = render_artifacts(manifest, build_contracts(manifest, waivers))\n"

@@ -24,14 +24,14 @@ from typing import Any
 import aiohttp
 import pytest
 
-from jj_server import JJServer, jj_server  # noqa: F401 - сессионная фикстура
-from openapi_contracts.errors import (
+from geas.errors import (
     ContractMockError,
     RequestContractError,
     ResponseContractError,
     ResponseVariantError,
 )
-from openapi_contracts.integrations.jj.contract_mock import _attach_note
+from geas.integrations.jj.contract_mock import _attach_note
+from jj_server import JJServer, jj_server  # noqa: F401 - сессионная фикстура
 from support import Project, make_project, spec
 
 #: Источник с path-параметром — обычной строкой, без ``format: uuid``.
@@ -660,7 +660,7 @@ def test_secondary_diagnostics_are_attached_without_add_note() -> None:
 
     notes = primary.__notes__  # type: ignore[attr-defined]
     assert len(notes) == 2
-    assert all(note.startswith("[openapi-contract-fixtures]") for note in notes)
+    assert all(note.startswith("[geas]") for note in notes)
     assert "ValueError" in notes[0]
     assert "KeyError" in notes[1]
 

@@ -37,14 +37,14 @@ import pytest
 import yaml
 from d42 import schema
 
-from openapi_contracts.errors import (
+from geas.errors import (
     ContractOverlayError,
     ManifestBindingError,
     RequestContractError,
     ResponseContractError,
 )
-from openapi_contracts.integrations.d42 import build_fixture, overlay_generators
-from openapi_contracts.semantic_diff import semantic_fingerprint
+from geas.integrations.d42 import build_fixture, overlay_generators
+from geas.semantic_diff import semantic_fingerprint
 from support import Project, make_project
 
 #: Стабильный ключ единственной операции.

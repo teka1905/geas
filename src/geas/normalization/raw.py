@@ -7,7 +7,7 @@ Swagger 2.0 и OpenAPI 3.0 уже никто не знает: различия (
 ``nullable``) исчезают ровно здесь.
 
 Схемы остаются **сырыми** Schema Object'ами: их нормализует
-:class:`~openapi_contracts.normalization.schemas.SchemaNormalizer`, отдельно для
+:class:`~geas.normalization.schemas.SchemaNormalizer`, отдельно для
 каждого направления.
 """
 

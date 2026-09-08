@@ -1,7 +1,7 @@
 """Реестр диалектов и общие помощники адаптеров.
 
 Диалект отвечает ровно за одно: привести свой документ к
-:class:`~openapi_contracts.normalization.raw.RawOperation`. Всё, что ниже —
+:class:`~geas.normalization.raw.RawOperation`. Всё, что ниже —
 нормализация схем, JSON Schema, d42, runtime, CLI — про версию спецификации уже
 не знает. Добавление OpenAPI 3.1 — это новый модуль и одна строка в
 :data:`DIALECTS`.

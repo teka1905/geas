@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from openapi_contracts.errors import ContractError
-from openapi_contracts.paths import (
+from geas.errors import ContractError
+from geas.paths import (
     ADDITIONAL_PROPERTIES,
     ARRAY_ITEMS,
     ContractPath,

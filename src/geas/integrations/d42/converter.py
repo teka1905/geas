@@ -1,6 +1,6 @@
 """IR → живые объекты схем d42 2.x.
 
-Модуль переводит нейтральное IR (:mod:`openapi_contracts.models`) в объекты
+Модуль переводит нейтральное IR (:mod:`geas.models`) в объекты
 ``d42.declaration`` — те самые ``schema.dict(...)`` / ``schema.list(...)``, которые
 потребитель кладёт в моки и подставляет через ``%``.
 
@@ -16,7 +16,7 @@ Schema, — поэтому каждое расхождение классифи�
 * **расширение** (d42 мягче контракта) — допустимо, только если оно
   задокументировано *и* соответствующее ограничение полностью покрыто JSON Schema,
   а генерируемая фикстура при этом остаётся валидной;
-* всё остальное — :class:`~openapi_contracts.errors.UnsupportedConstructError`
+* всё остальное — :class:`~geas.errors.UnsupportedConstructError`
   с точным keyword'ом, JSON Pointer'ом и contract path (fail closed).
 
 Принятые решения
@@ -55,15 +55,15 @@ Fail closed (список полный)
   взаимоисключающи (``DeclarationError: already declared``);
 * ``minProperties`` / ``maxProperties`` — у ``DictSchema`` таких свойств нет;
 * типизированный ``additionalProperties`` выражается через
-  :class:`~openapi_contracts.integrations.d42.typed_dict.TypedDictSchema`: обычный
+  :class:`~geas.integrations.d42.typed_dict.TypedDictSchema`: обычный
   d42 ``schema.dict`` не умеет проверять значения динамических ключей;
 * рекурсивные ``$ref`` — d42-схема строится «по значению», рекурсия развернулась бы
-  бесконечно (:class:`~openapi_contracts.errors.RecursiveSchemaError`);
+  бесконечно (:class:`~geas.errors.RecursiveSchemaError`);
 * ``enum``, чьи литералы противоречат соседним ограничениям (``pattern``, границам,
   ``multipleOf``): противоречие разрешимо на этапе сборки, поэтому проверяется сразу.
 
 Дополнительно: план (внутреннее дерево вызовов d42) — общий с
-:mod:`openapi_contracts.integrations.d42.renderer`. Благодаря этому
+:mod:`geas.integrations.d42.renderer`. Благодаря этому
 сгенерированный исходник и схема, собранная в памяти, не могут разъехаться:
 у них один источник решений.
 """
@@ -78,13 +78,13 @@ from typing import Any
 from d42 import optional, schema
 from d42.declaration import GenericSchema
 
-from openapi_contracts.errors import (
+from geas.errors import (
     RecursiveSchemaError,
     RefResolutionError,
     UnsupportedConstructError,
     ValidationFailedError,
 )
-from openapi_contracts.models import (
+from geas.models import (
     INTEGER_FORMAT_BOUNDS,
     AdditionalProperties,
     AllOfNode,
@@ -101,7 +101,7 @@ from openapi_contracts.models import (
     StringNode,
     UnionNode,
 )
-from openapi_contracts.paths import (
+from geas.paths import (
     ADDITIONAL_PROPERTIES,
     ARRAY_ITEMS,
     ContractPath,
@@ -182,8 +182,8 @@ def to_d42(node: SchemaNode, definitions: Mapping[str, SchemaNode]) -> GenericSc
 
     ``definitions`` — именованные определения бандла операции; ``RefNode``
     разрешается через них. Рекурсия отклоняется
-    :class:`~openapi_contracts.errors.RecursiveSchemaError`, отсутствующее
-    определение — :class:`~openapi_contracts.errors.RefResolutionError`.
+    :class:`~geas.errors.RecursiveSchemaError`, отсутствующее
+    определение — :class:`~geas.errors.RefResolutionError`.
     """
     root_plan, plans = plan_bundle(node, definitions)
     built: dict[str, GenericSchema] = {}
@@ -249,7 +249,7 @@ def topological_order(plans: Mapping[str, _Plan]) -> tuple[str, ...]:
     """Определения в порядке «сначала зависимости».
 
     Независимые определения идут по алфавиту — порядок артефакта детерминирован.
-    Цикл отклоняется :class:`~openapi_contracts.errors.RecursiveSchemaError`
+    Цикл отклоняется :class:`~geas.errors.RecursiveSchemaError`
     с перечислением участников.
     """
     order: list[str] = []

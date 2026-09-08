@@ -3,7 +3,7 @@
 Публичный вход один — :class:`ContractMock`, который создаётся методом
 ``OperationHandle.mock()``. Готовый чужой ``jj.Mocked`` библиотека не принимает:
 контракт восстановить интроспекцией matcher'а и response'а невозможно, поэтому
-мок всегда строится из :class:`~openapi_contracts.OperationHandle`.
+мок всегда строится из :class:`~geas.OperationHandle`.
 """
 
 from __future__ import annotations

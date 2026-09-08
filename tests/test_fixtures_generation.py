@@ -18,14 +18,14 @@ from pathlib import Path
 import pytest
 from d42 import optional, schema, validate_or_fail
 
-from openapi_contracts.errors import ContractOverlayError
-from openapi_contracts.integrations.d42 import build_fixture, overlay_generators
-from openapi_contracts.integrations.d42.fixtures import (
+from geas.errors import ContractOverlayError
+from geas.integrations.d42 import build_fixture, overlay_generators
+from geas.integrations.d42.fixtures import (
     project_first_variant,
     validate_overlay_fixture,
 )
-from openapi_contracts.models import Direction
-from openapi_contracts.runtime.validation import validate_instance
+from geas.models import Direction
+from geas.runtime.validation import validate_instance
 from support import make_project, spec
 
 SAMPLE = schema.dict(

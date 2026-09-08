@@ -84,11 +84,11 @@ def with_project(root: str, body: str) -> str:
 
 
 def test_core_imports_without_optional_extras() -> None:
-    """``import openapi_contracts`` не тянет ни d42, ни jj."""
+    """``import geas`` не тянет ни d42, ни jj."""
     result = run(
         "import sys\n"
-        "import openapi_contracts\n"
-        "print(openapi_contracts.__version__)\n"
+        "import geas\n"
+        "print(geas.__version__)\n"
         "print(sorted(name for name in sys.modules if name in ('d42', 'jj')))\n",
         block=("d42", "jj"),
     )
@@ -126,7 +126,7 @@ def test_validate_response_works_on_json_schema_alone(project_root: str) -> None
         with_project(
             project_root,
             "from isolated_contracts.generated import operations\n"
-            "from openapi_contracts.errors import ResponseContractError\n"
+            "from geas.errors import ResponseContractError\n"
             "handle = operations.api.delete_document\n"
             f"variant = handle.validate_response({ERROR_BODY}, status=400)\n"
             "print('OK', variant.label(), variant.d42_export)\n"
@@ -148,7 +148,7 @@ def test_mock_without_jj_extra_names_the_install_command(project_root: str) -> N
         with_project(
             project_root,
             "from isolated_contracts.generated import operations\n"
-            "from openapi_contracts.errors import MissingExtraError\n"
+            "from geas.errors import MissingExtraError\n"
             "try:\n"
             "    operations.api.create_document.mock(response=None, status=200)\n"
             "except MissingExtraError as error:\n"
@@ -159,7 +159,7 @@ def test_mock_without_jj_extra_names_the_install_command(project_root: str) -> N
     )
 
     assert "EXTRA jj" in result.stdout
-    assert "openapi-contract-fixtures[jj]" in result.stdout
+    assert "geas[jj]" in result.stdout
 
 
 def test_d42_schema_without_d42_extra_names_the_install_command(project_root: str) -> None:
@@ -168,8 +168,8 @@ def test_d42_schema_without_d42_extra_names_the_install_command(project_root: st
         with_project(
             project_root,
             "from isolated_contracts.generated import operations\n"
-            "from openapi_contracts.errors import MissingExtraError\n"
-            "from openapi_contracts.models import Direction\n"
+            "from geas.errors import MissingExtraError\n"
+            "from geas.models import Direction\n"
             "handle = operations.api.delete_document\n"
             "export = handle.response(status=400).d42_export\n"
             "try:\n"
@@ -182,13 +182,13 @@ def test_d42_schema_without_d42_extra_names_the_install_command(project_root: st
     )
 
     assert "EXTRA d42" in result.stdout
-    assert "openapi-contract-fixtures[d42]" in result.stdout
+    assert "geas[d42]" in result.stdout
 
 
 def test_cli_help_runs_without_optional_extras() -> None:
     """CLI поднимается и печатает справку на голом ядре."""
     result = run(
-        "from openapi_contracts.cli import main\n"
+        "from geas.cli import main\n"
         "try:\n"
         "    main(['--help'])\n"
         "except SystemExit as exit_code:\n"
@@ -196,7 +196,7 @@ def test_cli_help_runs_without_optional_extras() -> None:
         block=("d42", "jj"),
     )
 
-    assert "usage: openapi-contracts" in result.stdout
+    assert "usage: geas" in result.stdout
     assert "EXIT 0" in result.stdout
 
 

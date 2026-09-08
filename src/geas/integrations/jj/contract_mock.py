@@ -355,7 +355,7 @@ def _attach_note(target: BaseException, secondary: BaseException) -> None:
     Дублирующий канал — :attr:`ContractMock.diagnostics`: там лежат сами объекты
     исключений, а не их текст.
     """
-    note = f"[openapi-contract-fixtures] {type(secondary).__name__}: {secondary}"
+    note = f"[geas] {type(secondary).__name__}: {secondary}"
     add_note = getattr(target, "add_note", None)
     if add_note is not None:
         add_note(note)

@@ -1,7 +1,7 @@
-# CLI `openapi-contracts`
+# CLI `geas`
 
 ```
-openapi-contracts [-h] [--version] [-m MANIFEST] {init,list,inspect,add,update,check,diff} ...
+geas [-h] [--version] [-m MANIFEST] {init,list,inspect,add,update,check,diff} ...
 ```
 
 `-m/--manifest` — путь к manifest, по умолчанию `manifest.yaml` в текущем каталоге.
@@ -26,7 +26,7 @@ openapi-contracts [-h] [--version] [-m MANIFEST] {init,list,inspect,add,update,c
 ## `init`
 
 ```
-openapi-contracts -m contracts/manifest.yaml init \
+geas -m contracts/manifest.yaml init \
   --source ../api/openapi.yaml \
   --package myproject.contracts.generated \
   --directory ../myproject/contracts/generated \
@@ -44,7 +44,7 @@ openapi-contracts -m contracts/manifest.yaml init \
 ## `list` (синоним `inspect`)
 
 ```
-openapi-contracts list [--source NAME] [--json]
+geas list [--source NAME] [--json]
 ```
 
 Показывает всё, что видно в источниках: диалект, режим выбора, каждую операцию с
@@ -60,7 +60,7 @@ type и вариантами ответов. Звёздочкой помечен
 ## `add`
 
 ```
-openapi-contracts add KEY --source SOURCE
+geas add KEY --source SOURCE
                          [--operation-id ID]
                          [--method METHOD] [--path PATH]
                          [--request-content-type CT]
@@ -102,7 +102,7 @@ openapi-contracts add KEY --source SOURCE
 ## `update`
 
 ```
-openapi-contracts update
+geas update
 ```
 
 Детерминированно перегенерирует артефакты в `output.directory`.
@@ -125,7 +125,7 @@ d42-исходника и построение живого объекта d42 �
 ## `check`
 
 ```
-openapi-contracts check
+geas check
 ```
 
 Команда для CI. Генерирует результат в память и сравнивает с рабочим деревом,
@@ -141,7 +141,7 @@ openapi-contracts check
 ## `diff`
 
 ```
-openapi-contracts diff [--json]
+geas diff [--json]
 ```
 
 Сравнивает закоммиченные контракты с тем, что даёт текущая спецификация, и
@@ -157,17 +157,17 @@ openapi-contracts diff [--json]
 ## Типичная последовательность
 
 ```bash
-openapi-contracts init --source ../api/openapi.yaml --package app.contracts.generated \
+geas init --source ../api/openapi.yaml --package app.contracts.generated \
                        --directory ../app/contracts/generated
-openapi-contracts list                       # посмотреть, что есть
-openapi-contracts add api.createDocument --source main --operation-id createDocument
-openapi-contracts update                     # сгенерировать
-openapi-contracts check                      # это и ставится в CI
+geas list                       # посмотреть, что есть
+geas add api.createDocument --source main --operation-id createDocument
+geas update                     # сгенерировать
+geas check                      # это и ставится в CI
 ```
 
 После обновления спецификации:
 
 ```bash
-openapi-contracts diff     # что именно изменилось и контрактное ли это изменение
-openapi-contracts update   # принять изменение
+geas diff     # что именно изменилось и контрактное ли это изменение
+geas update   # принять изменение
 ```

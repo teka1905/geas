@@ -124,32 +124,32 @@ class Project:
 
     def load(self) -> Any:
         """Загрузить manifest объектом."""
-        from openapi_contracts.manifest import load_manifest
+        from geas.manifest import load_manifest
 
         return load_manifest(self.manifest_path)
 
     def waivers(self) -> Any:
         """Загрузить набор waiver'ов."""
-        from openapi_contracts.waivers import load_waivers
+        from geas.waivers import load_waivers
 
         return load_waivers(self.waivers_path)
 
     def build(self) -> Any:
         """Собрать контракты."""
-        from openapi_contracts.contracts import build_contracts
+        from geas.contracts import build_contracts
 
         return build_contracts(self.load(), self.waivers())
 
     def render(self) -> Any:
         """Отрендерить набор артефактов, ничего не записывая."""
-        from openapi_contracts.artifacts import render_artifacts
+        from geas.artifacts import render_artifacts
 
         manifest = self.load()
         return render_artifacts(manifest, self.build())
 
     def update(self) -> Any:
         """Записать артефакты на диск."""
-        from openapi_contracts.artifacts import write_artifacts
+        from geas.artifacts import write_artifacts
 
         manifest = self.load()
         artifacts = self.render()
@@ -158,7 +158,7 @@ class Project:
 
     def check(self) -> Any:
         """Проверить артефакты на drift."""
-        from openapi_contracts.artifacts import check_artifacts
+        from geas.artifacts import check_artifacts
 
         manifest = self.load()
         return check_artifacts(manifest.output_dir(), self.render())
@@ -171,7 +171,7 @@ class Project:
         if env:
             environment.update(env)
         return subprocess.run(
-            [sys.executable, "-m", "openapi_contracts", "-m", str(self.manifest_path), *args],
+            [sys.executable, "-m", "geas", "-m", str(self.manifest_path), *args],
             capture_output=True,
             text=True,
             cwd=self.root,

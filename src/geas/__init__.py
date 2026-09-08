@@ -1,4 +1,4 @@
-"""openapi-contract-fixtures — тестовые контракты и operation-aware моки из OpenAPI.
+"""geas — тестовые контракты и operation-aware моки из OpenAPI.
 
 Библиотека превращает checked-in OpenAPI в проверяемые артефакты:
 
@@ -7,7 +7,7 @@
 → проверка contract drift в CI``
 
 Ядро (этот пакет) не зависит ни от d42, ни от JJ. Опциональные интеграции живут
-в :mod:`openapi_contracts.integrations.d42` и :mod:`openapi_contracts.integrations.jj`
+в :mod:`geas.integrations.d42` и :mod:`geas.integrations.jj`
 и подключаются через extras ``[d42]`` и ``[jj]``.
 """
 

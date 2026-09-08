@@ -1,4 +1,4 @@
-"""CLI ``openapi-contracts``.
+"""CLI ``geas``.
 
 Команды:
 
@@ -76,7 +76,7 @@ class _UsageError(Exception):
 def build_parser() -> argparse.ArgumentParser:
     """Собрать разбор аргументов."""
     parser = argparse.ArgumentParser(
-        prog="openapi-contracts",
+        prog="geas",
         description="Генерация тестовых контрактов и operation-aware моков из OpenAPI",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -185,10 +185,10 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print(f"создан {waivers_path}")
     print()
     print("Дальше:")
-    print(f"  openapi-contracts -m {manifest_path} list")
-    print(f"  openapi-contracts -m {manifest_path} add <ключ> --source main --operation-id <id>")
-    print(f"  openapi-contracts -m {manifest_path} update")
-    print(f"  openapi-contracts -m {manifest_path} check   # это и ставится в CI")
+    print(f"  geas -m {manifest_path} list")
+    print(f"  geas -m {manifest_path} add <ключ> --source main --operation-id <id>")
+    print(f"  geas -m {manifest_path} update")
+    print(f"  geas -m {manifest_path} check   # это и ставится в CI")
     return EXIT_OK
 
 
@@ -345,12 +345,12 @@ def _cmd_add(args: argparse.Namespace) -> int:
     waivers.validate(manifest, today=dt.date.today())
     result = build_contracts(manifest, waivers)
     artifacts = render_artifacts(manifest, result)
-    with tempfile.TemporaryDirectory(prefix="openapi-contracts-add-") as staging:
+    with tempfile.TemporaryDirectory(prefix="geas-add-") as staging:
         write_artifacts(Path(staging), artifacts)
 
     manifest_path.write_text(dump_manifest(manifest), encoding="utf-8")
     print(f"операция {args.key} добавлена в {manifest_path}")
-    print("Теперь запустите 'openapi-contracts update', чтобы обновить артефакты")
+    print("Теперь запустите 'geas update', чтобы обновить артефакты")
     return EXIT_OK
 
 
@@ -504,7 +504,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
     print("generated-артефакты разошлись со спецификацией:", file=sys.stderr)
     print(report.describe(), file=sys.stderr)
     print(file=sys.stderr)
-    print("Запустите 'openapi-contracts update' и закоммитьте результат", file=sys.stderr)
+    print("Запустите 'geas update' и закоммитьте результат", file=sys.stderr)
     return EXIT_CONTRACT_ERROR
 
 
