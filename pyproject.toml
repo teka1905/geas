@@ -1,0 +1,115 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openapi-contract-fixtures"
+version = "0.1.0"
+description = "Генерация тестовых контрактов, JSON Schema, d42-схем и operation-aware моков из checked-in OpenAPI"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "openapi-contract-fixtures contributors" }]
+keywords = ["openapi", "swagger", "contract-testing", "json-schema", "d42", "jj", "mocks", "fixtures"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+    "Private :: Do Not Upload",
+]
+dependencies = [
+    "jsonschema[format]>=4,<5",
+    "PyYAML>=6,<7",
+]
+
+[project.optional-dependencies]
+d42 = ["d42>=2,<3"]
+jj = ["jj>=2.9,<3"]
+all = ["d42>=2,<3", "jj>=2.9,<3"]
+dev = [
+    "d42>=2,<3",
+    "jj>=2.9,<3",
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.24,<2",
+    "ruff>=0.9",
+    "mypy>=1.11",
+    "types-PyYAML",
+    "build>=1.2",
+    "twine>=5",
+    "types-jsonschema",
+]
+
+[project.scripts]
+openapi-contracts = "openapi_contracts.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/teka1905/openapi-contract-fixtures"
+Changelog = "https://github.com/teka1905/openapi-contract-fixtures/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openapi_contracts"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/docs",
+    "/examples",
+    "/README.md",
+    "/CHANGELOG.md",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+# Generated-артефакты форматировать нельзя: их байты — часть контракта, и любой
+# формат-проход ломает 'openapi-contracts check'. То же самое потребитель обязан
+# сделать у себя — см. README, раздел про CI.
+extend-exclude = ["**/generated/**"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RUF", "N", "PTH", "TID"]
+ignore = [
+    "RUF001",  # ambiguous unicode in docstrings: русские тексты — это нормально
+    "RUF002",
+    "RUF003",
+    "SIM108",
+    "B905",
+    # Относительные импорты внутри пакета — осознанный стиль: он делает
+    # перемещение подпакетов дешёвым и явно отделяет «своё» от внешних зависимостей.
+    "TID252",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+"examples/*" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["openapi_contracts"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/openapi_contracts"]
+strict = true
+warn_unreachable = true
+disallow_any_generics = true
+implicit_reexport = false
+
+[[tool.mypy.overrides]]
+# У этих пакетов нет type stubs; их публичные API покрыты нашими тестами.
+module = ["jj.*", "d42.*", "niltype.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "slow: сборка дистрибутива и установка в чистое окружение (исключается '-m \"not slow\"')",
+]
+filterwarnings = ["error::DeprecationWarning:openapi_contracts.*"]

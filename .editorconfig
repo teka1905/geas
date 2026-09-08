@@ -1,0 +1,27 @@
+; Единые настройки редактора для репозитория.
+; https://editorconfig.org
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.py]
+indent_size = 4
+max_line_length = 100
+
+[*.{yml,yaml,json,md}]
+indent_size = 2
+
+[*.md]
+; В Markdown два пробела в конце строки — это жёсткий перенос.
+trim_trailing_whitespace = false
+
+[Makefile]
+; Make требует табуляции в рецептах.
+indent_style = tab

@@ -1,0 +1,155 @@
+# Проверки репозитория: стиль и типы, тесты на всех поддерживаемых Python,
+# импортируемость ядра без extras и годность собранных дистрибутивов.
+# Секретов, деплоя и публикации здесь нет и быть не должно.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+# Новый пуш в ту же ветку отменяет предыдущий незавершённый прогон.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Установить пакет с dev-зависимостями
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      - name: ruff check
+        run: ruff check .
+
+      - name: ruff format --check
+        run: ruff format --check .
+
+      - name: mypy (strict, настройки в pyproject.toml)
+        run: mypy
+
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Установить пакет с dev-зависимостями
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      - name: "Политика сети: тесты выполняются без внешних соединений"
+        run: |
+          echo "Тесты не ходят в сеть: спецификации, схемы и моки берутся из"
+          echo "tests/fixtures, внешние сервисы не опрашиваются."
+          echo "Автоиспользуемая фикстура в tests/conftest.py запрещает исходящие"
+          echo "соединения: разрешены только AF_UNIX и loopback (127.0.0.0/8, ::1),"
+          echo "нужные локальному HTTP-серверу моков."
+          echo "Шаг, которому нужна сеть, в этот job добавлять нельзя."
+
+      - name: pytest
+        run: pytest -q
+
+  core-without-extras:
+    name: core-without-extras
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Установить пакет без extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Ядро импортируется и CLI запускается
+        run: |
+          python -c "import openapi_contracts"
+          openapi-contracts --help
+
+      - name: d42 и jj в этом окружении недоступны
+        run: |
+          python - <<'PY'
+          import importlib.util
+
+          leaked = [name for name in ("d42", "jj") if importlib.util.find_spec(name) is not None]
+          if leaked:
+              raise SystemExit(
+                  f"в установке без extras оказались пакеты {leaked}: "
+                  "ядро обязано работать без них"
+              )
+          print("extras отсутствуют, ядро самодостаточно")
+          PY
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Установить build и twine
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+
+      - name: Собрать sdist и wheel
+        run: python -m build
+
+      - name: Проверить метаданные дистрибутивов
+        run: twine check dist/*
+
+      - name: Поставить wheel в чистое окружение и прогнать smoke
+        run: |
+          python -m venv /tmp/wheel-smoke
+          /tmp/wheel-smoke/bin/python -m pip install --upgrade pip
+          /tmp/wheel-smoke/bin/python -m pip install dist/*.whl
+          /tmp/wheel-smoke/bin/python -c "import openapi_contracts"
+          /tmp/wheel-smoke/bin/python -c "from importlib.metadata import version; print(version('openapi-contract-fixtures'))"
+          /tmp/wheel-smoke/bin/openapi-contracts --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
