@@ -6,6 +6,7 @@ generated-реестром и проверять данные по JSON Schema.
 
 from __future__ import annotations
 
+from .description import DEFAULT_MAX_DEPTH, describe_contract
 from .operation import (
     OperationHandle,
     ParameterView,
@@ -18,6 +19,7 @@ from .validation import decode_parameter, validate_instance
 
 __all__ = [
     "CONTRACT_DOCUMENT_VERSION",
+    "DEFAULT_MAX_DEPTH",
     "OperationHandle",
     "OperationRegistry",
     "ParameterView",
@@ -25,6 +27,7 @@ __all__ = [
     "RequestView",
     "ResponseView",
     "decode_parameter",
+    "describe_contract",
     "handle_from_document",
     "validate_instance",
 ]

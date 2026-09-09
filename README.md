@@ -8,7 +8,7 @@ checked-in OpenAPI.
 становится OpenAPI-контракт: библиотека превращает его в исполняемые схемы и сразу
 показывает место, где fixture, mock или настоящий запрос перестал ему соответствовать.
 
-- Версия: **0.1.0**
+- Версия: **0.2.0**
 - Python: **3.10+**
 - Ядро зависит только от `jsonschema[format-nongpl]` и `PyYAML`. d42 и JJ — опциональные extras.
 
@@ -170,6 +170,35 @@ generated-артефакты разошлись со спецификацией:
 Запустите 'geas update' и закоммитьте результат
 ```
 
+### `show` — какие поля разрешает контракт
+
+```bash
+geas -m manifest.yaml show ws2.addTicket --direction response --status 200
+```
+
+```
+ws2.addTicket
+Response 200 application/json
+
+$ref #/$defs/ResponseDto; object; дополнительные свойства разрешены
+├── description — optional; string
+├── entityId — optional; integer; format int64
+├── payload — optional; $ref #/$defs/ObjectNode; object; дополнительные свойства разрешены
+└── rc — required; string; enum["OK", "ERROR"]
+
+JSON Schema:
+  /abs/path/schemas/generated/contracts/ws2__add_ticket.json#/responses/0/schema
+
+d42:
+  schemas.generated._d42.ws2__add_ticket_response:GeneratedResponseDtoSchema
+
+d42 source:
+  /abs/path/schemas/generated/_d42/ws2__add_ticket_response.py
+```
+
+Команда читает только уже сгенерированные артефакты: она ничего не перегенерирует, не
+открывает upstream OpenAPI, не ходит в сеть и не требует extra `[d42]`.
+
 Полный справочник по командам и флагам — [docs/cli.md](docs/cli.md).
 
 ---
@@ -275,7 +304,7 @@ operations: {}
 ## 5. CLI
 
 ```
-geas [-h] [--version] [-m MANIFEST] {init,list,inspect,add,update,check,diff}
+geas [-h] [--version] [-m MANIFEST] {init,list,inspect,add,update,check,diff,show}
 ```
 
 | Команда | Что делает |
@@ -286,6 +315,11 @@ geas [-h] [--version] [-m MANIFEST] {init,list,inspect,add,update,check,diff}
 | `update` | детерминированно перегенерировать артефакты |
 | `check` | проверить рабочее дерево на drift, ничего не меняя |
 | `diff` | семантический diff контрактов относительно закоммиченных артефактов |
+| `show` | показать форму уже сгенерированного контракта: поля, обязательность, ограничения и адреса артефактов |
+
+`list` отвечает на вопрос «что вообще есть в спецификации», `show` — «что
+разрешает уже закреплённый контракт»: первая читает OpenAPI, вторая — только
+generated-артефакты и ничего не перегенерирует.
 
 Коды возврата:
 
@@ -341,6 +375,7 @@ op.request.body()  # RequestBodyView: content_type, required, json_schema, d42_e
 op.responses  # (ResponseView(status=200, content_type='application/json', ...),)
 op.response(status=200)  # выбор варианта; при единственном варианте аргументы можно опустить
 op.unsupported  # варианты, не представимые контрактом, с причинами
+op.describe_response(status=200)  # человекочитаемая форма контракта строкой
 ```
 
 Валидация вручную, без мока:
@@ -365,6 +400,67 @@ GeneratedTicketSchema = op.d42_schema(Direction.RESPONSE, export=variant.d42_exp
 
 Строковый доступ `operations.by_key("ws2.addTicket")` и `operations.keys()` оставлены как
 escape hatch для инструментов; в тестах используйте generated namespace.
+
+### Что разрешает контракт и где он лежит
+
+Ручной alias над generated-схемой сам по себе не показывает форму контракта: в файле
+проекта видно только имя операции. Чтобы не искать generated-файл глазами, выбранное
+тело запроса и выбранный вариант ответа знают свои координаты:
+
+```python
+response = operations.ws2.add_ticket.response(status=200)
+
+response.contract_file  # PosixPath('/abs/.../generated/contracts/ws2__add_ticket.json')
+response.json_pointer  # '/responses/0/schema'  — RFC 6901
+response.contract_path  # '/abs/.../ws2__add_ticket.json#/responses/0/schema'
+response.d42_module  # 'schemas.generated._d42.ws2__add_ticket_response'
+response.d42_export  # 'GeneratedResponseDtoSchema'
+response.d42_reference  # 'schemas.generated._d42.ws2__add_ticket_response:GeneratedResponseDtoSchema'
+response.d42_source_path  # PosixPath('/abs/.../generated/_d42/ws2__add_ticket_response.py')
+```
+
+`d42_source_path` вычисляется по раскладке артефактов, **без импорта** d42-модуля:
+описание контракта работает и там, где extra `[d42]` не установлен. Если у варианта
+своей generated d42-схемы нет (d42 выключен, контракт рекурсивен, вариант без тела),
+все d42-координаты равны `None` — путь к чужой схеме не подставляется.
+
+Человекочитаемая форма — `describe()`; метод **возвращает строку** и ничего не печатает
+и не перегенерирует:
+
+```python
+print(response.describe())
+print(operations.ws2.add_ticket.describe_response(status=200))  # то же самое
+print(operations.ws2.add_ticket.describe_request_body())  # для запроса
+print(operations.ws2.add_ticket.describe_response(status=200, max_depth=2))
+```
+
+```
+ws2.addTicket
+Response 200 application/json
+
+$ref #/$defs/ResponseDto; object; дополнительные свойства разрешены
+├── description — optional; string
+├── entityId — optional; integer; format int64
+├── payload — optional; $ref #/$defs/ObjectNode; object; дополнительные свойства разрешены
+└── rc — required; string; enum["OK", "ERROR"]
+
+JSON Schema:
+  /abs/path/schemas/generated/contracts/ws2__add_ticket.json#/responses/0/schema
+
+d42:
+  schemas.generated._d42.ws2__add_ticket_response:GeneratedResponseDtoSchema
+
+d42 source:
+  /abs/path/schemas/generated/_d42/ws2__add_ticket_response.py
+```
+
+Формат — компактная навигация, а не второй валидатор: описание не ослабляет контракт
+(неизвестное ключевое слово названо, а не превращено в «любое значение»), не разрешает
+внешние `$ref`, обрывает рекурсию маркером и ограничивает глубину `max_depth`. Точная
+семантика всегда доступна по напечатанному пути. Разбор строк описания в тестах — плохая
+идея: для программного доступа есть `json_schema` и `geas show --json`.
+
+То же самое из терминала — `geas show`, см. [docs/cli.md](docs/cli.md#show).
 
 ---
 

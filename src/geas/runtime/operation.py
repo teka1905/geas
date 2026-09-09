@@ -3,6 +3,12 @@
 Handle иммутабелен, типизирован и не тянет за собой ни d42, ни JJ: импорт
 generated-реестра работает на голом ядре. Опциональные интеграции подключаются
 лениво, и если extra не установлен, ошибка называет точную команду установки.
+
+Кроме самого контракта, выбранное тело запроса и выбранный вариант ответа знают
+свои координаты в generated-артефактах: файл нормализованного контракта,
+JSON Pointer внутри него, d42-модуль, имя d42-схемы и путь к её исходнику.
+Благодаря этому от alias-файла в проекте до generated-схемы один шаг —
+``view.describe()`` или ``geas show``, а не поиск по каталогу.
 """
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from ..errors import (
@@ -20,6 +27,7 @@ from ..errors import (
     ResponseVariantError,
 )
 from ..models import Direction, ParameterLocation
+from .description import DEFAULT_MAX_DEPTH, describe_contract
 from .validation import decode_parameter, validate_instance
 
 __all__ = [
@@ -45,18 +53,62 @@ class ParameterView:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class RequestBodyView:
-    """Контракт тела запроса для одного content type."""
+    """Контракт тела запроса для одного content type.
+
+    Координаты артефактов (``contract_file`` и далее) необязательны: view можно
+    собрать и напрямую — так делают инструменты и тесты, — тогда координат
+    просто нет. Отсутствие значения — всегда ``None``, а не пустая строка:
+    пустая строка выглядела бы как настоящий, но пустой путь.
+    """
 
     content_type: str
     required: bool
     json_schema: Mapping[str, Any]
     #: Имя переменной generated d42-схемы (``None``, если d42 для операции выключен).
     d42_export: str | None
+    #: Стабильный ключ операции — нужен описанию, чтобы назвать себя.
+    operation_key: str | None = None
+    #: Файл нормализованного контракта (``contracts/<slug>.json``).
+    contract_file: Path | None = None
+    #: JSON Pointer этого тела внутри файла контракта (RFC 6901).
+    json_pointer: str | None = None
+    #: Полное имя generated d42-модуля направления.
+    d42_module: str | None = None
+    #: Файл этого модуля. Определяется по раскладке артефактов, **без** импорта:
+    #: описание обязано работать и без установленного extra ``[d42]``.
+    d42_source_path: Path | None = None
+
+    @property
+    def contract_path(self) -> str | None:
+        """Файл контракта вместе с JSON Pointer: ``/путь/файл.json#/request/bodies/0/schema``."""
+        return _contract_path(self.contract_file, self.json_pointer)
+
+    @property
+    def d42_reference(self) -> str | None:
+        """Ссылка ``модуль:переменная`` на generated d42-схему."""
+        return _d42_reference(self.d42_module, self.d42_export)
+
+    def describe(self, *, max_depth: int = DEFAULT_MAX_DEPTH) -> str:
+        """Человекочитаемое описание тела запроса. Ничего не печатает — возвращает строку."""
+        return describe_contract(
+            operation_key=self.operation_key,
+            direction=Direction.REQUEST,
+            content_type=self.content_type,
+            required=self.required,
+            json_schema=self.json_schema,
+            contract_path=self.contract_path,
+            d42_reference=self.d42_reference,
+            d42_source_path=self.d42_source_path,
+            max_depth=max_depth,
+        )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ResponseView:
-    """Контракт одного варианта ответа."""
+    """Контракт одного варианта ответа.
+
+    Про необязательные координаты артефактов — см. :class:`RequestBodyView`.
+    """
 
     status: int | str
     content_type: str | None
@@ -64,10 +116,64 @@ class ResponseView:
     json_schema: Mapping[str, Any] | None
     headers: tuple[ParameterView, ...]
     d42_export: str | None
+    #: Стабильный ключ операции — нужен описанию, чтобы назвать себя.
+    operation_key: str | None = None
+    #: Файл нормализованного контракта (``contracts/<slug>.json``).
+    contract_file: Path | None = None
+    #: JSON Pointer этого варианта внутри файла контракта (RFC 6901).
+    json_pointer: str | None = None
+    #: Полное имя generated d42-модуля направления.
+    d42_module: str | None = None
+    #: Файл этого модуля — определяется без импорта d42.
+    d42_source_path: Path | None = None
 
     def label(self) -> str:
         """Ярлык варианта для сообщений."""
         return f"{self.status}:{self.content_type or '-'}"
+
+    @property
+    def contract_path(self) -> str | None:
+        """Файл контракта вместе с JSON Pointer: ``/путь/файл.json#/responses/0/schema``."""
+        return _contract_path(self.contract_file, self.json_pointer)
+
+    @property
+    def d42_reference(self) -> str | None:
+        """Ссылка ``модуль:переменная`` на generated d42-схему."""
+        return _d42_reference(self.d42_module, self.d42_export)
+
+    def describe(self, *, max_depth: int = DEFAULT_MAX_DEPTH) -> str:
+        """Человекочитаемое описание варианта ответа. Ничего не печатает — возвращает строку."""
+        return describe_contract(
+            operation_key=self.operation_key,
+            direction=Direction.RESPONSE,
+            status=self.status,
+            content_type=self.content_type,
+            json_schema=self.json_schema,
+            contract_path=self.contract_path,
+            d42_reference=self.d42_reference,
+            d42_source_path=self.d42_source_path,
+            max_depth=max_depth,
+        )
+
+
+def _contract_path(contract_file: Path | None, json_pointer: str | None) -> str | None:
+    """Адрес схемы: путь к файлу контракта и JSON Pointer внутри него."""
+    if contract_file is None:
+        return None
+    if not json_pointer:
+        return str(contract_file)
+    return f"{contract_file}#{json_pointer}"
+
+
+def _d42_reference(module: str | None, export: str | None) -> str | None:
+    """Ссылка на generated d42-схему или ``None``, если её нет.
+
+    Половины ссылки недостаточно: без имени переменной по модулю всё равно
+    ничего не импортировать, поэтому неполная пара — это отсутствие ссылки.
+    """
+    if module is None or export is None:
+        return None
+    return f"{module}:{export}"
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -233,6 +339,28 @@ class OperationHandle:
             f"{sorted(i.label() for i in candidates)}. Укажите status и content_type явно",
             operation_key=self._key,
         )
+
+    # ------------------------------------------------------------ описание
+
+    def describe_response(
+        self,
+        *,
+        status: int | str | None = None,
+        content_type: str | None = None,
+        max_depth: int = DEFAULT_MAX_DEPTH,
+    ) -> str:
+        """Описание варианта ответа: поля, обязательность, ограничения, адреса артефактов.
+
+        Ничего не перегенерирует и не печатает: читается уже сгенерированный
+        контракт, наружу отдаётся строка.
+        """
+        return self.response(status=status, content_type=content_type).describe(max_depth=max_depth)
+
+    def describe_request_body(
+        self, *, content_type: str | None = None, max_depth: int = DEFAULT_MAX_DEPTH
+    ) -> str:
+        """То же самое для тела запроса."""
+        return self._request.body(content_type).describe(max_depth=max_depth)
 
     # ----------------------------------------------------------- валидация
 

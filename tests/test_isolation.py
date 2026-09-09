@@ -84,7 +84,13 @@ def with_project(root: str, body: str) -> str:
 
 
 def test_core_imports_without_optional_extras() -> None:
-    """``import geas`` не тянет ни d42, ни jj."""
+    """``import geas`` не тянет ни d42, ни jj.
+
+    Версия сравнивается с версией самого пакета, а не с литералом: иначе каждый
+    bump ронял бы тест изоляции, к которому номер версии отношения не имеет.
+    """
+    from geas import __version__
+
     result = run(
         "import sys\n"
         "import geas\n"
@@ -94,7 +100,7 @@ def test_core_imports_without_optional_extras() -> None:
     )
 
     lines = result.stdout.split()
-    assert lines[0] == "0.1.0"
+    assert lines[0] == __version__
     assert result.stdout.strip().endswith("[]")
 
 

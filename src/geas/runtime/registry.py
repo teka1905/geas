@@ -3,6 +3,11 @@
 Реестр ленив: документ контракта читается и разбирается при первом обращении к
 операции. Это держит импорт generated-пакета дешёвым даже на сотне операций и
 не требует ни d42, ни JJ.
+
+Реестр — единственное место, которое знает физическую раскладку артефактов
+(``contracts/<slug>.json`` и ``_d42/<module>.py``), поэтому именно он проставляет
+во views координаты: файл контракта, JSON Pointer варианта и путь к исходнику
+generated d42-схемы.
 """
 
 from __future__ import annotations
@@ -14,6 +19,7 @@ from typing import Any
 
 from ..errors import ArtifactError, OperationLookupError
 from ..models import ParameterLocation
+from .description import join_pointer
 from .operation import (
     OperationHandle,
     ParameterView,
@@ -27,11 +33,24 @@ __all__ = ["CONTRACT_DOCUMENT_VERSION", "OperationRegistry", "handle_from_docume
 #: Версия формата документа контракта. Реестр читает только её.
 CONTRACT_DOCUMENT_VERSION = 1
 
+#: Каталог generated d42-модулей внутри каталога артефактов.
+_D42_DIRECTORY = "_d42"
+
 
 def handle_from_document(
-    document: Mapping[str, Any], *, d42_package: str | None = None
+    document: Mapping[str, Any],
+    *,
+    d42_package: str | None = None,
+    contract_file: Path | str | None = None,
+    d42_dir: Path | str | None = None,
 ) -> OperationHandle:
-    """Собрать :class:`OperationHandle` из канонического документа контракта."""
+    """Собрать :class:`OperationHandle` из канонического документа контракта.
+
+    ``contract_file`` и ``d42_dir`` необязательны: без них handle работает
+    ровно как раньше, просто у его views нет координат артефактов. Если
+    ``d42_dir`` не передан, он выводится из ``contract_file`` по фиксированной
+    раскладке каталога артефактов.
+    """
     artifact = document.get("artifact") or {}
     version = artifact.get("version")
     if version != CONTRACT_DOCUMENT_VERSION:
@@ -40,6 +59,22 @@ def handle_from_document(
             f"(ожидалась {CONTRACT_DOCUMENT_VERSION}). Перегенерируйте артефакты командой "
             f"'geas update' той же версией библиотеки"
         )
+
+    key = document["key"]
+    contract = Path(contract_file) if contract_file is not None else None
+    d42_section = document.get("d42") or {}
+    d42_reason = d42_section.get("reason")
+    modules: dict[str, str | None] = {"request": None, "response": None}
+    sources: dict[str, Path | None] = {"request": None, "response": None}
+    if d42_section.get("enabled"):
+        directory = _d42_directory(d42_dir, contract)
+        for direction in ("request", "response"):
+            module = d42_section.get(f"{direction}_module")
+            if not module:
+                continue
+            if d42_package:
+                modules[direction] = f"{d42_package}.{module}"
+            sources[direction] = _d42_source(directory, module)
 
     request_raw = document["request"]
     parameters = [_parameter(item) for item in request_raw["parameters"]]
@@ -54,8 +89,16 @@ def handle_from_document(
                 required=item["required"],
                 json_schema=item["schema"],
                 d42_export=item.get("d42"),
+                operation_key=key,
+                contract_file=contract,
+                json_pointer=join_pointer("request", "bodies", index, "schema"),
+                # Координаты d42 проставляются только тому варианту, у которого
+                # своя generated-схема действительно есть: у соседнего варианта
+                # без ``d42`` путь к модулю уводил бы к чужой схеме.
+                d42_module=modules["request"] if item.get("d42") else None,
+                d42_source_path=sources["request"] if item.get("d42") else None,
             )
-            for item in request_raw["bodies"]
+            for index, item in enumerate(request_raw["bodies"])
         ),
     )
 
@@ -66,18 +109,14 @@ def handle_from_document(
             json_schema=item["schema"],
             headers=tuple(_parameter(header) for header in item["headers"]),
             d42_export=item.get("d42"),
+            operation_key=key,
+            contract_file=contract,
+            json_pointer=join_pointer("responses", index, "schema"),
+            d42_module=modules["response"] if item.get("d42") else None,
+            d42_source_path=sources["response"] if item.get("d42") else None,
         )
-        for item in document["responses"]
+        for index, item in enumerate(document["responses"])
     )
-
-    d42_section = document.get("d42") or {}
-    d42_reason = d42_section.get("reason")
-    modules: dict[str, str | None] = {"request": None, "response": None}
-    if d42_package and d42_section.get("enabled"):
-        for direction in ("request", "response"):
-            module = d42_section.get(f"{direction}_module")
-            if module:
-                modules[direction] = f"{d42_package}.{module}"
 
     return OperationHandle(
         key=document["key"],
@@ -92,6 +131,34 @@ def handle_from_document(
         d42_modules=modules,
         d42_reason=d42_reason,
     )
+
+
+def _d42_directory(d42_dir: Path | str | None, contract_file: Path | None) -> Path | None:
+    """Каталог generated d42-модулей.
+
+    Явное значение имеет приоритет; иначе каталог выводится из файла контракта
+    по раскладке артефактов: ``<output>/contracts/<slug>.json`` и
+    ``<output>/_d42/<module>.py`` лежат рядом.
+    """
+    if d42_dir is not None:
+        return Path(d42_dir)
+    if contract_file is None:
+        return None
+    return contract_file.parent.parent / _D42_DIRECTORY
+
+
+def _d42_source(directory: Path | None, module: str) -> Path | None:
+    """Файл generated d42-модуля, если он действительно лежит на диске.
+
+    Путь вычисляется по имени модуля, а не через импорт: описание контракта
+    обязано работать и там, где extra ``[d42]`` не установлен. Если файла нет
+    (например, пакет установлен без generated d42), возвращается ``None`` —
+    печатать несуществующий путь хуже, чем не печатать ничего.
+    """
+    if directory is None:
+        return None
+    candidate = directory / f"{module}.py"
+    return candidate if candidate.is_file() else None
 
 
 def _parameter(item: Mapping[str, Any]) -> ParameterView:
@@ -159,7 +226,12 @@ class OperationRegistry:
             ) from exc
         except json.JSONDecodeError as exc:
             raise ArtifactError(f"документ контракта {path} повреждён: {exc}") from exc
-        handle = handle_from_document(document, d42_package=self._d42_package)
+        handle = handle_from_document(
+            document,
+            d42_package=self._d42_package,
+            contract_file=path,
+            d42_dir=self._contracts_dir.parent / _D42_DIRECTORY,
+        )
         self._cache[key] = handle
         return handle
 

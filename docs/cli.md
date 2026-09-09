@@ -1,7 +1,7 @@
 # CLI `geas`
 
 ```
-geas [-h] [--version] [-m MANIFEST] {init,list,inspect,add,update,check,diff} ...
+geas [-h] [--version] [-m MANIFEST] {init,list,inspect,add,update,check,diff,show} ...
 ```
 
 `-m/--manifest` — путь к manifest, по умолчанию `manifest.yaml` в текущем каталоге.
@@ -154,6 +154,79 @@ geas diff [--json]
 `--json` даёт ту же информацию машиночитаемо, включая указатели на изменившиеся
 места.
 
+## `show`
+
+```
+geas show OPERATION [--direction {request,response}]
+                    [--status STATUS] [--content-type CONTENT_TYPE]
+                    [--json] [--max-depth N]
+```
+
+Показывает форму **уже сгенерированного** контракта операции: какие поля
+разрешены, какие обязательны, какие у них типы, `enum`, `pattern` и границы, —
+а в конце печатает точный адрес нормализованной JSON Schema и generated
+d42-схемы.
+
+Команда читает только артефакты. Она **ничего не перегенерирует**, не открывает
+upstream OpenAPI, не ходит в сеть и не требует extra `[d42]`: имя d42-схемы и
+путь к её исходнику берутся из документа контракта и раскладки каталога, а не
+из импорта модуля.
+
+```bash
+geas -m contracts/manifest.yaml show ws2.addTicket --direction response --status 200
+geas -m contracts/manifest.yaml show ws2.addTicket --direction request
+```
+
+```
+ws2.addTicket
+Response 200 application/json
+
+$ref #/$defs/ResponseDto; object; дополнительные свойства разрешены
+├── description — optional; string
+├── entityId — optional; integer; format int64
+├── payload — optional; $ref #/$defs/ObjectNode; object; дополнительные свойства разрешены
+└── rc — required; string; enum["OK", "ERROR"]
+
+JSON Schema:
+  /abs/path/schemas/generated/contracts/ws2__add_ticket.json#/responses/0/schema
+
+d42:
+  schemas.generated._d42.ws2__add_ticket_response:GeneratedResponseDtoSchema
+
+d42 source:
+  /abs/path/schemas/generated/_d42/ws2__add_ticket_response.py
+```
+
+Как читать вывод:
+
+| Фрагмент | Что означает |
+| --- | --- |
+| `required` / `optional` | только массив `required` родительского объекта; `default` и `const` обязательным поле не делают |
+| `string \| null` | `type: [string, null]`, `nullable: true` или `x-nullable: true` — три записи одного и того же |
+| `oneOf(string, integer)` | комбинатор; ветки со структурой раскрываются ниже как `oneOf[i]` |
+| `$ref #/$defs/Node (рекурсия)` | ссылка уже раскрывалась на этом пути; обход остановлен |
+| `$ref https://… (внешняя ссылка не раскрывается)` | внешние `$ref` не разрешаются: команда офлайновая |
+| `дополнительные свойства разрешены` | `additionalProperties` отсутствует или `true` — настоящая семантика JSON Schema, а не «наверное запрещены» |
+| `ещё: multipleOf, not` | ключевые слова, которые команда не разбирает; они не отброшены и не превращены в «любое значение» — смотрите саму JSON Schema по напечатанному пути |
+| `… (вложенность глубже N…)` | сработал `--max-depth` |
+
+Выбор варианта:
+
+* `--status` принимает целое число или `default`; он относится только к
+  `--direction response`;
+* единственный вариант ответа или единственное тело запроса выбираются
+  автоматически;
+* неоднозначность — код `2` и перечисление допустимых значений: молча брать
+  первый вариант команда не умеет.
+
+`--json` печатает валидный JSON без оформления: ключ операции, направление,
+статус, content type, `contract_file`, `json_pointer`, `contract_path`,
+`d42_module`, `d42_export`, `d42_reference`, `d42_source_path` и саму `schema`.
+Это форма для редактора и для скриптов.
+
+Неизвестный ключ операции, статус или content type дают код `2`. Отсутствие
+generated-артефактов — код `1` и подсказка выполнить `geas -m … update`.
+
 ## Типичная последовательность
 
 ```bash
@@ -163,6 +236,7 @@ geas list                       # посмотреть, что есть
 geas add api.createDocument --source main --operation-id createDocument
 geas update                     # сгенерировать
 geas check                      # это и ставится в CI
+geas show api.createDocument --status 200   # какие поля разрешает контракт
 ```
 
 После обновления спецификации:

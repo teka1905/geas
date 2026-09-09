@@ -9,6 +9,7 @@
 ``update``   детерминированно перегенерировать артефакты
 ``check``    проверить рабочее дерево на contract drift, ничего не меняя
 ``diff``     показать семантический diff контрактов
+``show``     показать форму уже сгенерированного контракта операции
 ===========  ==========================================================
 
 Коды возврата стабильны и годятся для CI:
@@ -42,7 +43,13 @@ from .artifacts import (
 )
 from .contracts import build_contracts
 from .dialects.base import detect_dialect
-from .errors import ContractError, ManifestError
+from .errors import (
+    ArtifactError,
+    ContractError,
+    ManifestError,
+    OperationLookupError,
+    ResponseVariantError,
+)
 from .manifest import (
     MANIFEST_VERSION,
     Manifest,
@@ -51,8 +58,10 @@ from .manifest import (
     dump_manifest,
     load_manifest,
 )
+from .models import Direction
 from .naming import python_path_from_key
 from .normalization.refs import SpecRegistry
+from .runtime import DEFAULT_MAX_DEPTH, OperationRegistry, RequestBodyView, ResponseView
 from .semantic_diff import diff_operations
 from .waivers import empty_waivers_document, load_waivers
 
@@ -127,6 +136,24 @@ def build_parser() -> argparse.ArgumentParser:
     diff = sub.add_parser("diff", help="семантический diff контрактов")
     diff.add_argument("--json", action="store_true", help="машиночитаемый вывод")
 
+    show = sub.add_parser("show", help="показать форму сгенерированного контракта операции")
+    show.add_argument("operation", help="стабильный ключ операции, например 'ws2.addTicket'")
+    show.add_argument(
+        "--direction",
+        choices=[Direction.REQUEST.value, Direction.RESPONSE.value],
+        default=Direction.RESPONSE.value,
+        help="какое направление показать (по умолчанию response)",
+    )
+    show.add_argument("--status", help="статус ответа: число или 'default'")
+    show.add_argument("--content-type", help="content type; обязателен, если вариантов несколько")
+    show.add_argument("--json", action="store_true", help="машиночитаемый вывод")
+    show.add_argument(
+        "--max-depth",
+        type=int,
+        default=DEFAULT_MAX_DEPTH,
+        help=f"глубина обхода вложенных полей (по умолчанию {DEFAULT_MAX_DEPTH})",
+    )
+
     return parser
 
 
@@ -147,6 +174,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_check(args)
         if args.command == "diff":
             return _cmd_diff(args)
+        if args.command == "show":
+            return _cmd_show(args)
     except _UsageError as error:
         print(f"ошибка использования: {error}", file=sys.stderr)
         return EXIT_USAGE_ERROR
@@ -567,6 +596,99 @@ def _cmd_diff(args: argparse.Namespace) -> int:
         for change in item.cosmetic:
             print(f"  [оформление] {change.describe()}")
     return EXIT_CONTRACT_ERROR if diff.is_semantic else EXIT_OK
+
+
+# --------------------------------------------------------------------- show
+
+
+def _cmd_show(args: argparse.Namespace) -> int:
+    """Показать форму уже сгенерированного контракта операции.
+
+    Команда работает по артефактам и **ничего не перегенерирует**: upstream
+    OpenAPI не читается, сеть не используется, d42 не импортируется. Поэтому
+    `show` безопасно звать из редактора и из Makefile потребителя.
+    """
+    manifest = load_manifest(args.manifest)
+    registry = _artifact_registry(manifest, args.manifest)
+    try:
+        handle = registry.by_key(args.operation)
+    except OperationLookupError as error:
+        raise _UsageError(str(error)) from error
+
+    direction = Direction(args.direction)
+    view: RequestBodyView | ResponseView
+    try:
+        if direction is Direction.RESPONSE:
+            view = handle.response(
+                status=_parse_status(args.status), content_type=args.content_type
+            )
+        else:
+            if args.status is not None:
+                raise _UsageError("--status относится только к --direction response")
+            view = handle.request.body(args.content_type)
+    except ResponseVariantError as error:
+        raise _UsageError(str(error)) from error
+
+    if args.json:
+        payload = _show_payload(handle.key, view, direction)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return EXIT_OK
+    print(view.describe(max_depth=args.max_depth))
+    return EXIT_OK
+
+
+def _artifact_registry(manifest: Manifest, manifest_argument: str) -> OperationRegistry:
+    """Реестр поверх уже записанных артефактов проекта."""
+    output_dir = manifest.output_dir()
+    index = read_generated_index(output_dir)
+    operations = index.get("operations") or {}
+    if not operations:
+        raise ArtifactError(
+            f"в {output_dir} нет generated-артефактов. Выполните "
+            f"'geas -m {manifest_argument} update'"
+        )
+    return OperationRegistry(
+        index={key: item["slug"] for key, item in operations.items()},
+        contracts_dir=output_dir / "contracts",
+        d42_package=f"{manifest.output_package}._d42",
+    )
+
+
+def _parse_status(raw: str | None) -> int | str | None:
+    """Разобрать ``--status``: целое число либо ``default``."""
+    if raw is None or raw == "default":
+        return raw
+    try:
+        return int(raw)
+    except ValueError as error:
+        raise _UsageError(
+            f"--status {raw!r}: статус должен быть целым числом или 'default'"
+        ) from error
+
+
+def _show_payload(
+    key: str, view: RequestBodyView | ResponseView, direction: Direction
+) -> dict[str, Any]:
+    """Машиночитаемое описание варианта: координаты артефактов и сама схема."""
+    return {
+        "operation": key,
+        "direction": direction.value,
+        "status": view.status if isinstance(view, ResponseView) else None,
+        "content_type": view.content_type,
+        "required": view.required if isinstance(view, RequestBodyView) else None,
+        "contract_file": _as_text(view.contract_file),
+        "json_pointer": view.json_pointer,
+        "contract_path": view.contract_path,
+        "d42_module": view.d42_module,
+        "d42_export": view.d42_export,
+        "d42_reference": view.d42_reference,
+        "d42_source_path": _as_text(view.d42_source_path),
+        "schema": view.json_schema,
+    }
+
+
+def _as_text(path: Path | None) -> str | None:
+    return None if path is None else str(path)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "geas"
-version = "0.1.0"
+version = "0.2.0"
 description = "Генерация тестовых контрактов, JSON Schema, d42-схем и operation-aware моков из checked-in OpenAPI"
 readme = "README.md"
 license = { file = "LICENSE" }

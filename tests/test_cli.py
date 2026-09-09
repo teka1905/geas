@@ -635,6 +635,208 @@ def test_diff_reports_removed_operation(tmp_path: Path) -> None:
     assert "операция исчезла: api.createDocument" in result.stdout
 
 
+# -------------------------------------------------------------------- show
+
+
+def test_show_prints_response_shape_with_paths(tmp_path: Path) -> None:
+    """``show`` показывает поля варианта ответа и точные адреса артефактов."""
+    project = demo_project(tmp_path / "workspace", {"api.listDocuments": _LIST})
+    assert project.cli("update").returncode == 0
+
+    result = project.cli("show", "api.listDocuments", "--direction", "response", "--status", "400")
+
+    assert result.returncode == 0, result.stderr
+    assert "api.listDocuments" in result.stdout
+    assert "Response 400 application/json" in result.stdout
+    assert "code — required; string; enum[" in result.stdout
+    assert "retryable — optional; boolean" in result.stdout
+    assert "дополнительные свойства запрещены" in result.stdout
+    contract = project.output_dir / "contracts" / "api__list_documents.json"
+    assert f"{contract}#/responses/1/schema" in result.stdout
+
+
+def test_show_prints_request_body_shape(tmp_path: Path) -> None:
+    """У направления ``request`` показывается тело запроса и его обязательность."""
+    project = demo_project(tmp_path / "workspace", {"api.createDocument": _CREATE})
+    assert project.cli("update").returncode == 0
+
+    result = project.cli("show", "api.createDocument", "--direction", "request")
+
+    assert result.returncode == 0, result.stderr
+    assert "Request application/json (тело обязательно)" in result.stdout
+    assert "title — required; string" in result.stdout
+    assert "#/request/bodies/0/schema" in result.stdout
+
+
+def test_show_names_generated_d42_module_and_export(tmp_path: Path) -> None:
+    """В выводе есть generated d42-модуль, имя схемы и путь к исходнику."""
+    project = demo_project(tmp_path / "workspace", {"multi.replaceContent": _REPLACE})
+    assert project.cli("update").returncode == 0
+
+    result = project.cli("show", "multi.replaceContent", "--content-type", "application/json")
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "demo_contracts.generated._d42.multi__replace_content_response:"
+        "GeneratedMultiReplaceContentResponse200Schema" in result.stdout
+    )
+    assert str(project.output_dir / "_d42" / "multi__replace_content_response.py") in result.stdout
+
+
+def test_show_does_not_regenerate_artifacts(tmp_path: Path) -> None:
+    """Просмотр ничего не меняет: артефакты остаются байт-в-байт прежними.
+
+    Это ключевое свойство команды: её зовут из редактора и из Makefile
+    потребителя, и она не имеет права трогать рабочее дерево.
+    """
+    project = demo_project(tmp_path / "workspace", {"api.listDocuments": _LIST})
+    assert project.cli("update").returncode == 0
+    before = {
+        path: path.read_bytes() for path in sorted(project.output_dir.rglob("*")) if path.is_file()
+    }
+
+    assert project.cli("show", "api.listDocuments", "--status", "200").returncode == 0
+
+    after = {
+        path: path.read_bytes() for path in sorted(project.output_dir.rglob("*")) if path.is_file()
+    }
+    assert after == before
+
+
+def test_show_reads_artifacts_without_the_specification(tmp_path: Path) -> None:
+    """Команда работает по артефактам: исходный OpenAPI ей не нужен."""
+    project = demo_project(tmp_path / "workspace", {"api.listDocuments": _LIST})
+    assert project.cli("update").returncode == 0
+    (project.root / "api" / "openapi.yaml").unlink()
+
+    result = project.cli("show", "api.listDocuments", "--status", "200")
+
+    assert result.returncode == 0, result.stderr
+    assert "items — required; array" in result.stdout
+
+
+def test_show_json_output_shape(tmp_path: Path) -> None:
+    """``--json`` отдаёт валидный JSON с координатами артефактов и самой схемой."""
+    project = demo_project(tmp_path / "workspace", {"api.listDocuments": _LIST})
+    assert project.cli("update").returncode == 0
+
+    result = project.cli("show", "api.listDocuments", "--status", "200", "--json")
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["operation"] == "api.listDocuments"
+    assert payload["direction"] == "response"
+    assert payload["status"] == 200
+    assert payload["content_type"] == "application/json"
+    assert payload["json_pointer"] == "/responses/0/schema"
+    assert payload["contract_file"] == str(
+        project.output_dir / "contracts" / "api__list_documents.json"
+    )
+    assert payload["contract_path"] == f"{payload['contract_file']}#/responses/0/schema"
+    assert payload["schema"]["$ref"] == "#/$defs/DocumentPage"
+
+
+def test_show_requires_status_when_variants_are_ambiguous(tmp_path: Path) -> None:
+    """Несколько вариантов ответа — выбор обязателен, первый молча не берётся."""
+    project = demo_project(tmp_path / "workspace", {"api.listDocuments": _LIST})
+    assert project.cli("update").returncode == 0
+
+    result = project.cli("show", "api.listDocuments")
+
+    assert result.returncode == 2
+    assert "не выбран однозначно" in result.stderr
+    assert "200:application/json" in result.stderr
+    assert "400:application/json" in result.stderr
+
+
+def test_show_requires_content_type_when_bodies_are_ambiguous(tmp_path: Path) -> None:
+    """То же самое для нескольких тел запроса: ошибка перечисляет допустимые значения."""
+    project = demo_project(tmp_path / "workspace", {"multi.replaceContent": _REPLACE})
+    assert project.cli("update").returncode == 0
+
+    result = project.cli("show", "multi.replaceContent", "--direction", "request")
+
+    assert result.returncode == 2
+    assert "несколько тел запроса" in result.stderr
+    assert "application/merge-patch+json" in result.stderr
+
+
+def test_show_selects_the_only_variant_automatically(tmp_path: Path) -> None:
+    """Единственный вариант выбирается сам: лишних флагов требовать не за что."""
+    project = demo_project(tmp_path / "workspace", {"multi.replaceContent": _REPLACE})
+    assert project.cli("update").returncode == 0
+
+    result = project.cli("show", "multi.replaceContent")
+
+    assert result.returncode == 0, result.stderr
+    assert "Response 200 application/json" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (("show", "api.noSuchOperation"), "api.noSuchOperation"),
+        (("show", "api.listDocuments", "--status", "503"), "нет варианта ответа 503"),
+        (("show", "api.listDocuments", "--content-type", "application/xml"), "application/xml"),
+        (("show", "api.listDocuments", "--status", "двести"), "--status"),
+        (
+            ("show", "api.listDocuments", "--direction", "request", "--status", "200"),
+            "--status относится только",
+        ),
+    ],
+)
+def test_show_rejects_unknown_selectors(
+    tmp_path: Path, arguments: tuple[str, ...], expected: str
+) -> None:
+    """Опечатка в ключе, статусе или content type — код 2 и понятное сообщение."""
+    project = demo_project(tmp_path / "workspace", {"api.listDocuments": _LIST})
+    assert project.cli("update").returncode == 0
+
+    result = project.cli(*arguments)
+
+    assert result.returncode == 2
+    assert "Traceback" not in result.stderr
+    assert expected in result.stderr
+
+
+def test_show_without_artifacts_suggests_update(tmp_path: Path) -> None:
+    """Без сгенерированных артефактов команда называет ровно то, что надо выполнить."""
+    project = demo_project(tmp_path / "workspace", {"api.listDocuments": _LIST})
+
+    result = project.cli("show", "api.listDocuments", "--status", "200")
+
+    assert result.returncode == 1
+    assert "нет generated-артефактов" in result.stderr
+    assert f"'geas -m {project.manifest_path} update'" in result.stderr
+
+
+def test_show_is_deterministic(tmp_path: Path) -> None:
+    """Два запуска подряд дают одинаковый вывод."""
+    project = demo_project(tmp_path / "workspace", {"api.listDocuments": _LIST})
+    assert project.cli("update").returncode == 0
+
+    first = project.cli("show", "api.listDocuments", "--status", "200")
+    second = project.cli("show", "api.listDocuments", "--status", "200")
+
+    assert first.stdout == second.stdout
+
+
+def test_inspect_still_shows_operations_of_the_source(tmp_path: Path) -> None:
+    """``inspect`` — по-прежнему обзор источника, а не форма контракта.
+
+    Команды соседствуют по смыслу, и подменить одну другой легко: этот тест
+    фиксирует, что ``inspect`` остался прежним.
+    """
+    project = demo_project(tmp_path / "workspace", {"api.listDocuments": _LIST})
+
+    result = project.cli("inspect")
+
+    assert result.returncode == 0, result.stderr
+    assert "источник main: api/openapi.yaml [openapi30]" in result.stdout
+    assert "* — операция выбрана manifest" in result.stdout
+    assert "JSON Schema:" not in result.stdout
+
+
 # --------------------------------------------------------------- коды возврата
 
 
