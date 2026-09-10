@@ -12,12 +12,22 @@ Waiver — единственный способ пропустить конст
 * ``expected_source`` закрепляет исходный фрагмент: если бэкенд поправил схему,
   waiver перестаёт действовать до явного пересмотра;
 * пересечение с ``non_waivable`` из manifest запрещено.
+
+**Область действия.** По умолчанию waiver закреплён за одной точкой контракта
+(``scope: exact``). Один дефект корневой модели — например, генератор Swagger 2,
+пометивший всю request-модель как ``readOnly``, — иначе требовал бы по записи на
+каждый лист, и файл становился бы нередактируемым. Для таких случаев есть
+``scope: subtree``: waiver закрепляется за узлом и всем, что под ним. Плата за
+широту — отпечаток: ``expected_source`` subtree-waiver'а считается по всему
+поддереву с развёрнутыми ``$ref``, поэтому любое изменение внутри ломает
+генерацию явно, а не проскакивает молча.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -32,9 +42,12 @@ from .models import Direction
 from .paths import ContractPath, format_contract_path, parse_contract_path
 
 __all__ = [
+    "SUBTREE_RULES",
     "WAIVERS_VERSION",
+    "ExpiringWaiver",
     "Waiver",
     "WaiverRule",
+    "WaiverScope",
     "WaiverSet",
     "empty_waivers_document",
     "load_waivers",
@@ -72,6 +85,31 @@ class WaiverRule(str, Enum):
     ALLOW_UNSUPPORTED_SERIALIZATION = "allow_unsupported_serialization"
 
 
+class WaiverScope(str, Enum):
+    """Область действия waiver'а внутри контракта."""
+
+    #: Ровно одна точка контракта — поведение по умолчанию и до версии 0.3.0.
+    EXACT = "exact"
+    #: Узел и всё поддерево под ним.
+    SUBTREE = "subtree"
+
+
+#: Правила, которые допускают ``scope: subtree``.
+#:
+#: Общий признак — правило осмысленно применяется к каждой точке поддерева по
+#: отдельности и не зависит от того, что именно в этой точке стоит. Правила,
+#: подставляющие конкретное содержимое (``replace_schema``, ``add_property``,
+#: ``extend_enum``), сюда не входят: «заменить всё поддерево на эту схему» —
+#: бессмыслица, а не послабление. ``allow_any`` не входит по другой причине:
+#: он и так съедает поддерево целиком, обход внутрь просто не доходит.
+SUBTREE_RULES = frozenset(
+    {
+        WaiverRule.IGNORE_READ_ONLY,
+        WaiverRule.IGNORE_WRITE_ONLY,
+        WaiverRule.RELAX_REQUIRED,
+    }
+)
+
 _EXCLUSIVE_RULES = frozenset(
     {WaiverRule.ALLOW_ANY, WaiverRule.REPLACE_SCHEMA, WaiverRule.ADD_PROPERTY}
 )
@@ -104,6 +142,7 @@ _ALLOWED_FIELDS = frozenset(
         "expected_source",
         "replacement",
         "values",
+        "scope",
         "status",
         "content_type",
     }
@@ -150,6 +189,8 @@ class Waiver:
     replacement: Any = None
     #: Литералы для :attr:`WaiverRule.EXTEND_ENUM`.
     values: tuple[Any, ...] = ()
+    #: Область действия: одна точка либо всё поддерево под :attr:`path`.
+    scope: WaiverScope = WaiverScope.EXACT
     #: Сужение до конкретного статуса ответа. ``None`` — все варианты направления.
     status: int | str | None = None
     #: Сужение до конкретного content type. ``None`` — все варианты направления.
@@ -161,20 +202,32 @@ class Waiver:
         return (self.status, self.content_type)
 
     @property
-    def scope(self) -> tuple[str, Direction, ContractPath, int | str | None, str | None]:
-        """Область действия без учёта правила."""
+    def target(self) -> tuple[str, Direction, ContractPath, int | str | None, str | None]:
+        """Куда нацелен waiver — без учёта правила и ширины области."""
         return (self.operation, self.direction, self.path, self.status, self.content_type)
 
     @property
     def identity(self) -> tuple[Any, ...]:
-        """Полный ключ уникальности."""
-        return (*self.scope, self.rule)
+        """Полный ключ уникальности.
+
+        ``scope`` в ключ намеренно не входит: ``exact`` и ``subtree`` на одной и
+        той же точке с одним правилом — это не два разных waiver'а, а
+        двусмысленность. Она отсекается как дубликат ещё при загрузке, поэтому
+        :meth:`WaiverSet.consult` не может оказаться перед выбором наугад.
+        """
+        return (*self.target, self.rule)
 
     def matches_variant(self, status: int | str | None, content_type: str | None) -> bool:
         """Применим ли waiver к конкретному варианту (статус, content type)."""
         if self.status is not None and self.status != status:
             return False
         return not (self.content_type is not None and self.content_type != content_type)
+
+    def covers(self, path: ContractPath) -> bool:
+        """Попадает ли точка контракта в область действия waiver'а."""
+        if self.scope is WaiverScope.SUBTREE:
+            return path[: len(self.path)] == self.path
+        return path == self.path
 
     def describe(self) -> str:
         """Короткое описание для сообщений об ошибках."""
@@ -183,9 +236,10 @@ class Waiver:
             variant = (
                 f" [{self.status if self.status is not None else '*'}:{self.content_type or '*'}]"
             )
+        scope = " (поддерево)" if self.scope is WaiverScope.SUBTREE else ""
         return (
             f"{self.operation} / {self.direction.value} / "
-            f"{format_contract_path(self.path)} / {self.rule.value}{variant}"
+            f"{format_contract_path(self.path)} / {self.rule.value}{variant}{scope}"
         )
 
     @classmethod
@@ -243,6 +297,22 @@ class Waiver:
                 raise WaiverError(f"{where}: поле 'values' допустимо только для extend_enum")
             values = ()
 
+        raw_scope = data.get("scope", WaiverScope.EXACT.value)
+        try:
+            scope = WaiverScope(raw_scope)
+        except ValueError as exc:
+            allowed = [item.value for item in WaiverScope]
+            raise WaiverError(f"{where}.scope: {raw_scope!r} не входит в {allowed}") from exc
+        if scope is WaiverScope.SUBTREE and rule not in SUBTREE_RULES:
+            allowed_rules = ", ".join(sorted(item.value for item in SUBTREE_RULES))
+            raise WaiverError(
+                f"{where}: правило {rule.value} не допускает 'scope: subtree'. "
+                f"Поддеревом послабляются только правила, осмысленные в каждой точке "
+                f"по отдельности ({allowed_rules}); {rule.value} задаёт содержимое "
+                f"конкретного узла, и распространить его на всё поддерево нельзя. "
+                f"Оставьте scope: exact и выпишите waiver на нужную точку"
+            )
+
         for name in ("reason", "owner", "operation"):
             if not isinstance(data[name], str):
                 raise WaiverError(f"{where}.{name}: ожидалась строка")
@@ -274,6 +344,7 @@ class Waiver:
             expected_source=expected_source,
             replacement=replacement,
             values=values,
+            scope=scope,
             status=status,
             content_type=content_type,
         )
@@ -294,11 +365,33 @@ class Waiver:
             data["replacement"] = self.replacement
         if self.values:
             data["values"] = list(self.values)
+        if self.scope is not WaiverScope.EXACT:
+            # ``exact`` не пишется: канонический вид файла у проектов, которые
+            # subtree не используют, обязан остаться прежним.
+            data["scope"] = self.scope.value
         if self.status is not None:
             data["status"] = self.status
         if self.content_type is not None:
             data["content_type"] = self.content_type
         return data
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ExpiringWaiver:
+    """Waiver, у которого срок истекает в ближайшем окне."""
+
+    waiver: Waiver
+    #: Сколько дней осталось; ``0`` — истекает сегодня.
+    days_left: int
+
+    def describe(self) -> str:
+        """Строка для предупреждения CLI."""
+        when = "истекает сегодня" if self.days_left == 0 else f"осталось дней: {self.days_left}"
+        return (
+            f"{self.waiver.describe()} — {when} "
+            f"(expires_at: {self.waiver.expires_at.isoformat()}, "
+            f"owner: {self.waiver.owner}, issue: {self.waiver.issue})"
+        )
 
 
 @dataclass(slots=True)
@@ -311,19 +404,32 @@ class WaiverSet:
     """
 
     waivers: tuple[Waiver, ...] = ()
-    _used: set[tuple[Any, ...]] = field(default_factory=set)
+    #: Точки контракта, на которых сработал waiver: identity → {(status, ct, path)}.
+    _usage: dict[tuple[Any, ...], set[tuple[Any, ...]]] = field(default_factory=dict)
     _index: dict[tuple[str, Direction, ContractPath, WaiverRule], list[Waiver]] = field(
+        default_factory=dict
+    )
+    #: Subtree-waiver'ы отдельно: их нельзя найти точным ключом.
+    _subtree_index: dict[tuple[str, Direction, WaiverRule], list[Waiver]] = field(
         default_factory=dict
     )
 
     def __post_init__(self) -> None:
         index: dict[tuple[str, Direction, ContractPath, WaiverRule], list[Waiver]] = {}
+        subtree_index: dict[tuple[str, Direction, WaiverRule], list[Waiver]] = {}
         identities: set[tuple[Any, ...]] = set()
-        by_scope: dict[tuple[Any, ...], list[Waiver]] = {}
+        by_target: dict[tuple[Any, ...], list[Waiver]] = {}
         for waiver in self.waivers:
             if waiver.identity in identities:
                 raise WaiverError(f"избыточный waiver: {waiver.describe()} объявлен дважды")
-            others = by_scope.get(waiver.scope, [])
+            # Эксклюзивность считается по точке привязки, а не по области.
+            # Subtree-правила (``ignore_read_only``, ``ignore_write_only``,
+            # ``relax_required``) решают судьбу *слота* свойства в родительском
+            # объекте — присутствие и обязательность, — а не содержимое узла.
+            # Поэтому накрывающее поддерево не спорит с ``replace_schema`` или
+            # ``add_property`` внутри себя: они правят разные вещи, и порядок
+            # применения определён. Спорят только правила на одной точке.
+            others = by_target.get(waiver.target, [])
             conflict = next(
                 (
                     other
@@ -341,11 +447,17 @@ class WaiverSet:
                     f"правилом в этой точке"
                 )
             identities.add(waiver.identity)
-            by_scope.setdefault(waiver.scope, []).append(waiver)
-            index.setdefault(
-                (waiver.operation, waiver.direction, waiver.path, waiver.rule), []
-            ).append(waiver)
+            by_target.setdefault(waiver.target, []).append(waiver)
+            if waiver.scope is WaiverScope.SUBTREE:
+                subtree_index.setdefault(
+                    (waiver.operation, waiver.direction, waiver.rule), []
+                ).append(waiver)
+            else:
+                index.setdefault(
+                    (waiver.operation, waiver.direction, waiver.path, waiver.rule), []
+                ).append(waiver)
         self._index = index
+        self._subtree_index = subtree_index
 
     # ------------------------------------------------------------- валидация
 
@@ -379,13 +491,38 @@ class WaiverSet:
                 for waiver in self.waivers:
                     if waiver.operation != spec.key or waiver.direction != assertion.direction:
                         continue
-                    if _paths_overlap(waiver.path, assertion.path):
-                        raise WaiverError(
-                            f"waiver {waiver.describe()} пересекается с non_waivable "
-                            f"{format_contract_path(assertion.path)} операции {spec.key!r}",
-                            operation_key=spec.key,
-                            direction=assertion.direction.value,
+                    if not _paths_overlap(waiver.path, assertion.path):
+                        continue
+                    protected = format_contract_path(assertion.path)
+                    detail = ""
+                    if waiver.scope is WaiverScope.SUBTREE:
+                        # Покрывающий waiver стоит выше защищённой точки, и по
+                        # одному его пути непонятно, что именно он задел.
+                        detail = (
+                            f"\n  waiver покрывает поддерево: "
+                            f"{format_contract_path(waiver.path)}"
+                            f"\n  защищённая точка внутри:   {protected}"
                         )
+                    raise WaiverError(
+                        f"waiver {waiver.describe()} пересекается с non_waivable "
+                        f"{protected} операции {spec.key!r}{detail}",
+                        operation_key=spec.key,
+                        direction=assertion.direction.value,
+                    )
+
+    def expiring(self, *, today: dt.date, warn_days: int) -> tuple[ExpiringWaiver, ...]:
+        """Waiver'ы, которым осталось не больше ``warn_days`` дней.
+
+        Это предупреждение, а не ошибка: дата истечения не должна наступать
+        внезапно посреди чужого релиза. Просроченные сюда не попадают — их ловит
+        :meth:`validate` и роняет сборку.
+        """
+        soon: list[ExpiringWaiver] = []
+        for waiver in self.waivers:
+            days_left = (waiver.expires_at - today).days
+            if 0 <= days_left <= warn_days:
+                soon.append(ExpiringWaiver(waiver=waiver, days_left=days_left))
+        return tuple(sorted(soon, key=lambda item: (item.days_left, item.waiver.describe())))
 
     def check_operations_known(self, keys: set[str]) -> None:
         """Убедиться, что каждый waiver ссылается на существующую операцию."""
@@ -408,12 +545,21 @@ class WaiverSet:
         source_digest: str,
         status: int | str | None = None,
         content_type: str | None = None,
+        subtree_digest: Callable[[ContractPath, WaiverRule], str] | None = None,
     ) -> Waiver | None:
         """Найти waiver для точки контракта и отметить его использованным.
 
+        Порядок поиска детерминирован: сначала точное совпадение, затем
+        ближайший subtree-предок, затем более дальний. Точный waiver всегда
+        выигрывает у покрывающего поддерева, а из двух поддеревьев — то, что
+        ближе к точке.
+
         Если отпечаток исходного фрагмента разошёлся с ``expected_source``,
         waiver считается устаревшим и генерация падает: значит источник
-        поправили, и послабление надо пересмотреть, а не продлевать вслепую.
+        поправили, и послабление надо пересмотреть, а не продлевать вслепую. Для
+        subtree-waiver'а сверяется отпечаток **всего поддерева**: его считает
+        ``subtree_digest``, который передаёт нормализатор — только он знает
+        исходный фрагмент, стоящий в точке привязки.
         """
         candidates = [
             item
@@ -421,27 +567,133 @@ class WaiverSet:
             if item.matches_variant(status, content_type)
         ]
         if not candidates:
+            candidates = self._subtree_candidates(
+                operation=operation,
+                direction=direction,
+                path=path,
+                rule=rule,
+                status=status,
+                content_type=content_type,
+            )
+        if not candidates:
             return None
-        # Более узкий waiver выигрывает у более общего.
-        candidates.sort(key=lambda item: (item.status is None, item.content_type is None))
-        waiver = candidates[0]
-        if waiver.expected_source != source_digest:
+        waiver = self._pick(candidates, path=path)
+
+        expected_now = source_digest
+        if waiver.scope is WaiverScope.SUBTREE:
+            if subtree_digest is None:
+                raise WaiverError(
+                    f"waiver {waiver.describe()} объявлен с 'scope: subtree', но в этой точке "
+                    f"контракта отпечаток поддерева посчитать нельзя. Сузьте waiver до "
+                    f"scope: exact",
+                    operation_key=operation,
+                    direction=direction.value,
+                )
+            expected_now = subtree_digest(waiver.path, waiver.rule)
+
+        if waiver.expected_source != expected_now:
             raise WaiverError(
-                f"waiver {waiver.describe()} устарел: исходный фрагмент изменился.\n"
-                f"  ожидался expected_source: {waiver.expected_source}\n"
-                f"  фактический:              {source_digest}\n"
-                f"Пересмотрите послабление и обновите expected_source осознанно. "
-                f"Если waiver задумывался только для одного варианта ответа, сузьте его "
-                f"полями status и content_type",
+                self._stale_message(waiver, path=path, actual=expected_now),
                 operation_key=operation,
                 direction=direction.value,
             )
-        self._used.add(waiver.identity)
+        self._usage.setdefault(waiver.identity, set()).add((status, content_type, path))
         return waiver
 
+    def _subtree_candidates(
+        self,
+        *,
+        operation: str,
+        direction: Direction,
+        path: ContractPath,
+        rule: WaiverRule,
+        status: int | str | None,
+        content_type: str | None,
+    ) -> list[Waiver]:
+        """Subtree-waiver'ы, накрывающие точку; остаются только ближайшие."""
+        covering = [
+            item
+            for item in self._subtree_index.get((operation, direction, rule), ())
+            if item.covers(path) and item.matches_variant(status, content_type)
+        ]
+        if not covering:
+            return []
+        nearest = max(len(item.path) for item in covering)
+        return [item for item in covering if len(item.path) == nearest]
+
+    @staticmethod
+    def _pick(candidates: list[Waiver], *, path: ContractPath) -> Waiver:
+        """Выбрать один waiver из равноправных кандидатов.
+
+        Более узкий по варианту ответа выигрывает у более общего. Полная ничья
+        означает, что выбор был бы сделан наугад, — это ошибка, а не «какой-то
+        из них подойдёт».
+        """
+
+        def narrowness(item: Waiver) -> tuple[bool, bool]:
+            return (item.status is None, item.content_type is None)
+
+        ordered = sorted(candidates, key=narrowness)
+        best = narrowness(ordered[0])
+        tied = [item for item in ordered if narrowness(item) == best]
+        if len(tied) > 1:
+            listing = "\n".join(f"  - {item.describe()}" for item in tied)
+            raise WaiverError(
+                f"точку контракта {format_contract_path(path)} накрывают несколько "
+                f"равнозначных waiver'ов, и выбор между ними был бы произвольным:\n"
+                f"{listing}\nСузьте один из них полями status/content_type или json_pointer",
+                operation_key=tied[0].operation,
+                direction=tied[0].direction.value,
+            )
+        return ordered[0]
+
+    @staticmethod
+    def _stale_message(waiver: Waiver, *, path: ContractPath, actual: str) -> str:
+        if waiver.scope is WaiverScope.SUBTREE:
+            return (
+                f"waiver {waiver.describe()} устарел: поддерево изменилось.\n"
+                f"  waiver покрывает поддерево: {format_contract_path(waiver.path)}\n"
+                f"  точка контракта:            {format_contract_path(path)}\n"
+                f"  ожидался expected_source: {waiver.expected_source}\n"
+                f"  фактический:              {actual}\n"
+                f"Отпечаток subtree-waiver'а считается по всему поддереву, поэтому его "
+                f"ломает любое изменение внутри — в том числе то, ради которого waiver "
+                f"больше не нужен. Пересмотрите послабление и обновите expected_source "
+                f"осознанно"
+            )
+        return (
+            f"waiver {waiver.describe()} устарел: исходный фрагмент изменился.\n"
+            f"  ожидался expected_source: {waiver.expected_source}\n"
+            f"  фактический:              {actual}\n"
+            f"Пересмотрите послабление и обновите expected_source осознанно. "
+            f"Если waiver задумывался только для одного варианта ответа, сузьте его "
+            f"полями status и content_type"
+        )
+
+    def coverage(self, waiver: Waiver) -> int:
+        """Сколько точек контракта накрыл waiver за текущий прогон."""
+        return len(self._usage.get(waiver.identity, ()))
+
+    def subtree_coverage(self) -> tuple[tuple[Waiver, int], ...]:
+        """Покрытие каждого subtree-waiver'а — то, на что смотрит ревьюер.
+
+        Одна запись вместо семидесяти пяти читается легко, но по ней не видно,
+        не слишком ли она широка. Число накрытых точек — ровно тот признак,
+        который это показывает.
+        """
+        return tuple(
+            (waiver, self.coverage(waiver))
+            for waiver in self.waivers
+            if waiver.scope is WaiverScope.SUBTREE
+        )
+
     def assert_all_used(self) -> None:
-        """Потребовать, чтобы каждый waiver действительно понадобился."""
-        unused = [w for w in self.waivers if w.identity not in self._used]
+        """Потребовать, чтобы каждый waiver действительно понадобился.
+
+        Subtree-waiver считается использованным, если сработал хотя бы раз:
+        поддерево — это заявка на область, а не на конкретное число точек.
+        """
+        unused = [w for w in self.waivers if not self._usage.get(w.identity)]
         if unused:
             listing = "\n".join(f"  - {w.describe()}" for w in unused)
             raise WaiverError(
@@ -451,7 +703,7 @@ class WaiverSet:
 
     def reset_usage(self) -> None:
         """Сбросить отметки использования (нужно между прогонами генерации)."""
-        self._used.clear()
+        self._usage.clear()
 
     def to_dict(self) -> dict[str, Any]:
         """Каноническое представление файла waivers."""

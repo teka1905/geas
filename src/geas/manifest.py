@@ -56,6 +56,9 @@ MANIFEST_VERSION = 1
 #: Срок жизни waiver'а по умолчанию, дни.
 DEFAULT_WAIVER_MAX_DAYS = 90
 
+#: За сколько дней до истечения waiver'а предупреждать.
+DEFAULT_WAIVER_WARN_DAYS = 14
+
 
 class Selection(str, Enum):
     """Режим выбора операций источника."""
@@ -114,6 +117,9 @@ class Policies:
     """Настраиваемые политики проекта."""
 
     waiver_max_days: int = DEFAULT_WAIVER_MAX_DAYS
+    #: За сколько дней до ``expires_at`` ``geas check`` начинает предупреждать.
+    #: Это предупреждение, а не ошибка: срок не должен наступать внезапно.
+    waiver_warn_days: int = DEFAULT_WAIVER_WARN_DAYS
     unknown_formats: UnknownFormatPolicy = UnknownFormatPolicy.REJECT
 
     @classmethod
@@ -121,10 +127,22 @@ class Policies:
         if data is None:
             return cls()
         data = _require_mapping(data, "policies")
-        _reject_unknown(data, {"waiver_max_days", "unknown_formats"}, "policies")
+        _reject_unknown(
+            data, {"waiver_max_days", "waiver_warn_days", "unknown_formats"}, "policies"
+        )
         max_days = data.get("waiver_max_days", DEFAULT_WAIVER_MAX_DAYS)
         if not isinstance(max_days, int) or isinstance(max_days, bool) or max_days <= 0:
             raise ManifestError("policies.waiver_max_days: ожидалось положительное целое")
+        warn_days = data.get("waiver_warn_days", DEFAULT_WAIVER_WARN_DAYS)
+        if not isinstance(warn_days, int) or isinstance(warn_days, bool) or warn_days < 0:
+            raise ManifestError("policies.waiver_warn_days: ожидалось неотрицательное целое")
+        if warn_days > max_days:
+            # Окно предупреждения шире максимального срока — предупреждение
+            # горело бы на каждом waiver'е всегда и перестало бы что-то значить.
+            raise ManifestError(
+                f"policies.waiver_warn_days ({warn_days}) больше policies.waiver_max_days "
+                f"({max_days}): такое окно накрывает любой waiver и не несёт сигнала"
+            )
         raw_formats = data.get("unknown_formats", UnknownFormatPolicy.REJECT.value)
         try:
             formats = UnknownFormatPolicy(raw_formats)
@@ -133,11 +151,16 @@ class Policies:
             raise ManifestError(
                 f"policies.unknown_formats: {raw_formats!r} не входит в {allowed}"
             ) from exc
-        return cls(waiver_max_days=max_days, unknown_formats=formats)
+        return cls(
+            waiver_max_days=max_days,
+            waiver_warn_days=warn_days,
+            unknown_formats=formats,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "waiver_max_days": self.waiver_max_days,
+            "waiver_warn_days": self.waiver_warn_days,
             "unknown_formats": self.unknown_formats.value,
         }
 

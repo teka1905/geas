@@ -12,7 +12,7 @@
     "operations.py": "f37bde874f38abeada8d11300c68af34f70c01d9966952c4083e07519a5958db"
   },
   "fingerprint": "f3aec2d11665859414f3f5baf8bd1250f8fbfe663a656e246944505f51951877",
-  "generator": "0.2.0",
+  "generator": "0.3.0",
   "operations": {
     "api.createDocument": {
       "fingerprint": "4a642ea837a5b29b3ad5df9e303445b7f57fc9340e95d4970774c1d3580a0797",
