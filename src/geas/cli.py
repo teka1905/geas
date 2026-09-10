@@ -63,7 +63,7 @@ from .naming import python_path_from_key
 from .normalization.refs import SpecRegistry
 from .runtime import DEFAULT_MAX_DEPTH, OperationRegistry, RequestBodyView, ResponseView
 from .semantic_diff import diff_operations
-from .waivers import empty_waivers_document, load_waivers
+from .waivers import WaiverSet, empty_waivers_document, load_waivers
 
 __all__ = ["build_parser", "main"]
 
@@ -494,16 +494,34 @@ def _parse_response_selector(raw: str) -> dict[str, Any]:
 # ------------------------------------------------------------------- update
 
 
-def _load(args: argparse.Namespace) -> tuple[Manifest, Any]:
+def _load(args: argparse.Namespace) -> tuple[Manifest, WaiverSet]:
     manifest = load_manifest(args.manifest)
     waivers = load_waivers(manifest.base_dir / manifest.waivers_path)
     waivers.validate(manifest, today=dt.date.today())
     return manifest, waivers
 
 
+def _report_waivers(manifest: Manifest, waivers: WaiverSet) -> None:
+    """Показать охват subtree-waiver'ов и предупредить о близком истечении.
+
+    Покрытие печатается потому, что по одной записи с ``scope: subtree`` не видно
+    её ширины: «покрыто точек контракта — 75» и «— 2» читаются на ревью
+    совершенно по-разному.
+
+    Истечение — предупреждение, а не ошибка: waiver ещё действует, ронять чужую
+    сборку не за что. Ошибкой оно станет в тот день, который в ``expires_at``.
+    """
+    for waiver, covered in waivers.subtree_coverage():
+        print(f"  waiver {waiver.describe()}: покрыто точек контракта — {covered}")
+    expiring = waivers.expiring(today=dt.date.today(), warn_days=manifest.policies.waiver_warn_days)
+    for item in expiring:
+        print(f"предупреждение: waiver скоро истекает — {item.describe()}", file=sys.stderr)
+
+
 def _cmd_update(args: argparse.Namespace) -> int:
     manifest, waivers = _load(args)
     result = build_contracts(manifest, waivers)
+    _report_waivers(manifest, waivers)
     artifacts = render_artifacts(manifest, result)
     removed = write_artifacts(manifest.output_dir(), artifacts)
     print(f"обновлено файлов: {len(artifacts.files)} в {manifest.output_dir()}")
@@ -525,6 +543,7 @@ def _cmd_update(args: argparse.Namespace) -> int:
 def _cmd_check(args: argparse.Namespace) -> int:
     manifest, waivers = _load(args)
     result = build_contracts(manifest, waivers)
+    _report_waivers(manifest, waivers)
     artifacts = render_artifacts(manifest, result)
     report = check_artifacts(manifest.output_dir(), artifacts)
     if report.is_clean:

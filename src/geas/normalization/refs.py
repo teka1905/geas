@@ -27,7 +27,20 @@ import yaml
 from ..errors import RefResolutionError, SpecLoadError
 from ..models import Origin
 
-__all__ = ["ResolvedRef", "SpecRegistry", "resolve_json_pointer", "unescape_pointer_token"]
+__all__ = [
+    "EXPANDED_KEY",
+    "RECURSION_KEY",
+    "ResolvedRef",
+    "SpecRegistry",
+    "expand_refs",
+    "resolve_json_pointer",
+    "unescape_pointer_token",
+]
+
+#: Маркер цикла в развёрнутом фрагменте: значение — индекс цели в стеке развёртки.
+RECURSION_KEY = "$recursion"
+#: Ключ для цели ``$ref``, которая не является объектом и не сливается с соседями.
+EXPANDED_KEY = "$expanded"
 
 #: Ключи, которые допускается видеть рядом с ``$ref``: они всё равно отбрасываются
 #: как несемантические. Любой другой сосед ``$ref`` — ошибка, потому что OpenAPI 3.0
@@ -286,3 +299,73 @@ class SpecRegistry:
                 source=origin.source,
                 json_pointer=origin.pointer,
             )
+
+
+def expand_refs(
+    registry: SpecRegistry,
+    node: Any,
+    *,
+    base: Path,
+    origin: Origin,
+    max_depth: int,
+) -> Any:
+    """Развернуть все ``$ref`` внутри фрагмента в одно самодостаточное дерево.
+
+    Нужно там, где отпечаток обязан зависеть от **содержимого** поддерева, а не
+    от текста ссылок: сам по себе ``{"$ref": "#/definitions/Thing"}`` не меняется,
+    когда ``Thing`` переписали, и waiver на такое поддерево молча пережил бы
+    правку контракта.
+
+    Развёртка сохраняет семантику, которой пользуется нормализация:
+
+    * цель ``$ref`` подставляется на место узла, а ключи-соседи (``readOnly``,
+      ``writeOnly``, nullable-маркер, аннотации) накладываются поверх неё — ровно
+      так их и читает :mod:`geas.normalization.schemas`;
+    * имя цели в результат не попадает, поэтому переименование схемы или вынос
+      фрагмента в ``$ref`` и обратно отпечаток не меняют;
+    * цикл не разворачивается бесконечно: повторно встреченная цель заменяется
+      маркером :data:`RECURSION_KEY` с индексом в текущем стеке — он стабилен,
+      пока стабильна форма цикла.
+
+    Порядок ключей значения не имеет: отпечаток считается по канонической
+    сериализации с сортировкой ключей.
+    """
+
+    def walk(value: Any, base: Path, origin: Origin, stack: tuple[Any, ...], depth: int) -> Any:
+        if depth > max_depth:
+            raise RefResolutionError(
+                f"глубина развёртки $ref превысила {max_depth} — похоже на рекурсию, "
+                f"собранную в обход $ref",
+                source=origin.source,
+                json_pointer=origin.pointer,
+            )
+        if isinstance(value, list):
+            return [walk(item, base, origin, stack, depth + 1) for item in value]
+        if not isinstance(value, dict):
+            return value
+        ref = value.get("$ref")
+        siblings = {
+            key: walk(item, base, origin, stack, depth + 1)
+            for key, item in value.items()
+            if key != "$ref"
+        }
+        if not isinstance(ref, str):
+            return siblings
+        resolved = registry.resolve(ref, base=base, origin=origin)
+        marker = (registry.document_id(resolved.document_path), resolved.pointer)
+        if marker in stack:
+            return {**siblings, RECURSION_KEY: stack.index(marker)}
+        target = walk(
+            resolved.value,
+            resolved.document_path,
+            resolved.origin,
+            (*stack, marker),
+            depth + 1,
+        )
+        if not isinstance(target, dict):
+            # ``$ref`` на не-объект нормализация всё равно отвергнет; отпечатку
+            # достаточно сохранить значение, не притворяясь Schema Object.
+            return {**siblings, EXPANDED_KEY: target}
+        return {**target, **siblings}
+
+    return walk(node, base, origin, (), 0)

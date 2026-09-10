@@ -25,7 +25,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from ..errors import UnsupportedConstructError
+from ..errors import UnsupportedConstructError, WaiverError
 from ..fingerprints import semantic_source_digest
 from ..manifest import Policies, UnknownFormatPolicy
 from ..models import (
@@ -56,8 +56,8 @@ from ..paths import (
     format_contract_path,
     variant_segment,
 )
-from ..waivers import WaiverRule, WaiverSet, waiver_source_digest
-from .refs import SpecRegistry
+from ..waivers import Waiver, WaiverRule, WaiverScope, WaiverSet, waiver_source_digest
+from .refs import SpecRegistry, expand_refs
 
 __all__ = ["SUPPORTED_FORMATS", "SchemaDialectConfig", "SchemaNormalizer"]
 
@@ -215,7 +215,14 @@ class SchemaNormalizer:
         self._building: set[str] = set()
         self._inline_stack: list[tuple[str, str]] = []
         self._waiver_prefixes = self._collect_waiver_prefixes()
+        self._subtree_anchors = self._collect_subtree_anchors()
         self._variant: tuple[int | str | None, str | None] = (None, None)
+        # Исходные фрагменты в точках привязки subtree-waiver'ов и посчитанные по
+        # ним отпечатки. Живут ровно один вызов :meth:`normalize`: у разных
+        # вариантов ответа по одному и тому же contract path стоят разные
+        # фрагменты, и переиспользовать отпечаток между ними нельзя.
+        self._anchors: dict[ContractPath, tuple[Any, Path, Origin]] = {}
+        self._subtree_digests: dict[tuple[ContractPath, WaiverRule], str] = {}
 
     # ------------------------------------------------------------------ API
 
@@ -264,12 +271,18 @@ class SchemaNormalizer:
         ``status`` и ``content_type`` описывают текущий вариант: waiver может быть
         сужен до одного варианта ответа, не задевая остальные.
         """
-        previous = self._variant
+        previous_variant = self._variant
+        previous_anchors = self._anchors
+        previous_digests = self._subtree_digests
         self._variant = (status, content_type)
+        self._anchors = {}
+        self._subtree_digests = {}
         try:
             return self._normalize(_Frame(node=node, base=base, origin=origin, path=root, depth=0))
         finally:
-            self._variant = previous
+            self._variant = previous_variant
+            self._anchors = previous_anchors
+            self._subtree_digests = previous_digests
 
     # ------------------------------------------------------------- waiver'ы
 
@@ -288,19 +301,110 @@ class SchemaNormalizer:
                 prefixes.add(waiver.path[:depth])
         return prefixes
 
-    def _consult(self, rule: WaiverRule, frame: _Frame) -> Any:
-        """Спросить waiver для текущей точки контракта."""
+    def _collect_subtree_anchors(self) -> tuple[ContractPath, ...]:
+        """Точки привязки subtree-waiver'ов этой операции и направления."""
+        return tuple(
+            sorted(
+                {
+                    waiver.path
+                    for waiver in self._waivers.waivers
+                    if waiver.scope is WaiverScope.SUBTREE
+                    and waiver.operation == self._operation_key
+                    and waiver.direction == self._direction
+                }
+            )
+        )
+
+    def _inside_subtree_waiver(self, path: ContractPath) -> bool:
+        """Лежит ли точка внутри области действия какого-нибудь subtree-waiver'а."""
+        return any(path[: len(anchor)] == anchor for anchor in self._subtree_anchors)
+
+    def _remember_anchor(self, path: ContractPath, node: Any, base: Path, origin: Origin) -> None:
+        """Запомнить исходный фрагмент, стоящий в точке привязки subtree-waiver'а.
+
+        Побеждает первое попадание: на одном и том же contract path нормализатор
+        оказывается дважды, когда разворачивает ``$ref`` по месту, и закреплять
+        надо то, что реально написано в спецификации в этой позиции, — вместе с
+        соседями ``$ref`` вроде ``readOnly``.
+        """
+        if path in self._anchors or path not in self._subtree_anchors:
+            return
+        self._anchors[path] = (node, base, origin)
+
+    def _subtree_digest(self, anchor: ContractPath, rule: WaiverRule) -> str:
+        """Отпечаток всего поддерева в точке привязки subtree-waiver'а.
+
+        Сериализуется исходный фрагмент спецификации, у которого:
+
+        1. развёрнуты все ``$ref`` (:func:`~geas.normalization.refs.expand_refs`) —
+           иначе правка общей схемы не меняла бы отпечаток;
+        2. выброшены несемантические ключи (``description``, ``title``,
+           ``example``, ``default``, ...), кроме того маркера, ради которого
+           waiver и выписан: ``ignore_read_only`` сохраняет ``readOnly``,
+           ``ignore_write_only`` — ``writeOnly``;
+        3. отсортированы ключи при сериализации.
+
+        Поэтому отпечаток не зависит от порядка ключей в YAML/JSON, от правки
+        описаний и примеров и от того, вынесен ли фрагмент в ``$ref``, — и
+        меняется от любой правки типов, ``enum``, ``required``, ``pattern`` или
+        состава свойств где угодно внутри поддерева.
+        """
+        cached = self._subtree_digests.get((anchor, rule))
+        if cached is not None:
+            return cached
+        recorded = self._anchors.get(anchor)
+        if recorded is None:  # pragma: no cover — точка привязки всегда посещается первой
+            raise WaiverError(
+                f"waiver с 'scope: subtree' привязан к {format_contract_path(anchor)}, "
+                f"но такой точки в контракте операции {self._operation_key!r} "
+                f"({self._direction.value}) нет",
+                operation_key=self._operation_key,
+                direction=self._direction.value,
+            )
+        node, base, origin = recorded
+        expanded = expand_refs(self._registry, node, base=base, origin=origin, max_depth=_MAX_DEPTH)
+        value = waiver_source_digest(expanded, rule)
+        self._subtree_digests[(anchor, rule)] = value
+        return value
+
+    def _consult_at(
+        self,
+        rule: WaiverRule,
+        *,
+        path: ContractPath,
+        node: Any,
+        base: Path,
+        origin: Origin,
+        source_digest: str,
+    ) -> Waiver | None:
+        """Спросить waiver для точки контракта.
+
+        Фрагмент запоминается **до** обращения: если точка сама является точкой
+        привязки subtree-waiver'а, отпечаток поддерева считается уже по ней.
+        """
+        self._remember_anchor(path, node, base, origin)
         status, content_type = self._variant
-        waiver = self._waivers.consult(
+        return self._waivers.consult(
             operation=self._operation_key,
             direction=self._direction,
-            path=frame.path,
+            path=path,
             rule=rule,
-            source_digest=semantic_source_digest(frame.node),
+            source_digest=source_digest,
             status=status,
             content_type=content_type,
+            subtree_digest=self._subtree_digest,
         )
-        return waiver
+
+    def _consult(self, rule: WaiverRule, frame: _Frame) -> Any:
+        """Спросить waiver для текущей точки контракта."""
+        return self._consult_at(
+            rule,
+            path=frame.path,
+            node=frame.node,
+            base=frame.base,
+            origin=frame.origin,
+            source_digest=semantic_source_digest(frame.node),
+        )
 
     def _fail(self, frame: _Frame, message: str, *, waivable: WaiverRule | None = None) -> None:
         """Бросить ошибку с координатами и, если применимо, готовым рецептом waiver'а."""
@@ -337,6 +441,7 @@ class SchemaNormalizer:
     ) -> SchemaNode:
         if frame.depth > _MAX_DEPTH:
             self._fail(frame, f"глубина схемы превысила {_MAX_DEPTH} — похоже на рекурсию")
+        self._remember_anchor(frame.path, frame.node, frame.base, frame.origin)
         node = frame.node
         if isinstance(node, bool):
             self._fail(
@@ -449,7 +554,10 @@ class SchemaNormalizer:
         resolved = self._registry.resolve(node["$ref"], base=frame.base, origin=frame.origin)
         nullable = bool(node.get(self._dialect.nullable_key, False))
 
-        inline = frame.path in self._waiver_prefixes
+        # ``$ref`` разворачивается по месту там, где послабление иначе протекло бы
+        # в соседние операции: на пути к точке waiver'а и всюду внутри поддерева,
+        # которое subtree-waiver объявил своим.
+        inline = frame.path in self._waiver_prefixes or self._inside_subtree_waiver(frame.path)
         marker = (self._registry.document_id(resolved.document_path), resolved.pointer)
 
         if inline:
@@ -457,7 +565,8 @@ class SchemaNormalizer:
                 self._fail(
                     frame,
                     f"путь waiver'а проходит через рекурсивный $ref {node['$ref']!r} — "
-                    f"развернуть его по месту невозможно",
+                    f"развернуть его по месту невозможно. Если поддерево накрыто waiver'ом "
+                    f"с 'scope: subtree', сузьте его так, чтобы рекурсия осталась снаружи",
                 )
             self._inline_stack.append(marker)
             try:
@@ -824,15 +933,13 @@ class SchemaNormalizer:
         )
 
     def _relaxed_required(self, frame: _Frame, name: str, raw_property: Any) -> bool:
-        status, content_type = self._variant
-        waiver = self._waivers.consult(
-            operation=self._operation_key,
-            direction=self._direction,
+        waiver = self._consult_at(
+            WaiverRule.RELAX_REQUIRED,
             path=(*frame.path, name),
-            rule=WaiverRule.RELAX_REQUIRED,
+            node=raw_property,
+            base=frame.base,
+            origin=frame.origin.child("properties", name),
             source_digest=semantic_source_digest(raw_property),
-            status=status,
-            content_type=content_type,
         )
         return waiver is not None
 
@@ -863,6 +970,7 @@ class SchemaNormalizer:
                 source_digest=semantic_source_digest(None),
                 status=status,
                 content_type=content_type,
+                subtree_digest=self._subtree_digest,
             )
             if used is None:  # pragma: no cover — найден тот же waiver выше
                 continue
@@ -901,15 +1009,13 @@ class SchemaNormalizer:
             keyword = "writeOnly"
             rule = WaiverRule.IGNORE_WRITE_ONLY
         if keyword is not None and rule is not None:
-            status, content_type = self._variant
-            waiver = self._waivers.consult(
-                operation=self._operation_key,
-                direction=self._direction,
+            waiver = self._consult_at(
+                rule,
                 path=(*frame.path, name),
-                rule=rule,
+                node=raw_property,
+                base=frame.base,
+                origin=frame.origin.child("properties", name),
                 source_digest=waiver_source_digest(raw_property, rule),
-                status=status,
-                content_type=content_type,
             )
             return waiver is None
         return False
