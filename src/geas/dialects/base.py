@@ -105,7 +105,7 @@ def detect_dialect(document: Any, *, source: str) -> Dialect:
             return OpenApi30Dialect(document)
         if openapi.startswith("3.1."):
             raise UnsupportedSpecVersionError(
-                f"OpenAPI {openapi} не поддерживается в версии 0.1.\n"
+                f"OpenAPI {openapi} не поддерживается.\n"
                 f"OpenAPI 3.1 не является надмножеством 3.0: в нём удалён 'nullable', "
                 f"'exclusiveMinimum'/'exclusiveMaximum' стали числовыми, 'type' может быть "
                 f"массивом, появились булевы схемы и '$defs'. Разбирать 3.1 правилами 3.0 "

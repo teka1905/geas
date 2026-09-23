@@ -59,8 +59,8 @@ operations:
     # пропадёт обязательный id или у visibility опустеет enum, генерация упадёт.
     non_waivable:
       - direction: response
-        json_pointer: /id
+        json_pointer: /body/id
         rules: [required, non_null]
       - direction: response
-        json_pointer: /visibility
+        json_pointer: /body/visibility
         rules: [required, non_empty_enum]

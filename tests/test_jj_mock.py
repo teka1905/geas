@@ -495,10 +495,9 @@ async def test_each_mock_validates_only_its_own_requests(
     )
 
     with pytest.raises(RequestContractError) as info:
-        async with listing:
-            async with creation:
-                await send_json(jj_server, "GET", DOCUMENTS_PATH)
-                await send_json(jj_server, "POST", DOCUMENTS_PATH, json={"title": "Черновик"})
+        async with listing, creation:
+            await send_json(jj_server, "GET", DOCUMENTS_PATH)
+            await send_json(jj_server, "POST", DOCUMENTS_PATH, json={"title": "Черновик"})
 
     assert info.value.operation_key == "api.createDocument"
     assert listing.diagnostics == ()

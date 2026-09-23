@@ -10,12 +10,12 @@
 #   waivers:
 #     - operation: api.createDocument       # ключ операции из manifest
 #       direction: response                 # request | response
-#       json_pointer: /payload              # contract path, а не JSON Pointer спеки
+#       json_pointer: /body/payload         # contract path, а не JSON Pointer спеки
 #       rule: allow_any                     # что именно ослабляем
 #       reason: "бэкенд отдаёт свободную форму, схема в работе"
 #       owner: documents-team
 #       issue: ISSUE-1
-#       expires_at: 2099-01-01              # не дальше policies.waiver_max_days
+#       expires_at: <YYYY-MM-DD>            # не дальше policies.waiver_max_days от сегодня
 #       expected_source: <sha256 из текста ошибки генерации>
 #
 # Библиотека сама печатает готовую заготовку waiver'а вместе с ошибкой, поэтому

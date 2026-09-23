@@ -53,6 +53,7 @@ from .errors import (
 from .manifest import (
     MANIFEST_VERSION,
     Manifest,
+    OperationSpec,
     Selection,
     default_manifest_document,
     dump_manifest,
@@ -60,6 +61,7 @@ from .manifest import (
 )
 from .models import Direction
 from .naming import python_path_from_key
+from .normalization.raw import RawOperation
 from .normalization.refs import SpecRegistry
 from .runtime import DEFAULT_MAX_DEPTH, OperationRegistry, RequestBodyView, ResponseView
 from .semantic_diff import diff_operations
@@ -261,17 +263,14 @@ def _inspect(manifest: Manifest, *, only: str | None = None) -> dict[str, Any]:
         )
         dialect = detect_dialect(registry.entry_document(), source=source.name)
         operations: list[dict[str, Any]] = []
-        explicit_ids = {
-            spec.operation_id: spec.key
-            for spec in manifest.operations
-            if spec.source == source.name and spec.operation_id
-        }
+        bindings = [spec for spec in manifest.operations if spec.source == source.name]
         for raw in dialect.operations(registry, base_path=source.base_path):
             key: str | None = None
-            if source.selection is Selection.ALL and raw.operation_id:
-                key = f"{source.name}.{raw.operation_id}"
-            elif raw.operation_id in explicit_ids:
-                key = explicit_ids[raw.operation_id]
+            if source.selection is Selection.ALL:
+                if raw.operation_id:
+                    key = f"{source.name}.{raw.operation_id}"
+            else:
+                key = _explicit_key(bindings, raw)
             unsupported = [
                 f"request {body.content_type}: {body.unsupported_reason}"
                 for body in raw.bodies
@@ -309,6 +308,22 @@ def _inspect(manifest: Manifest, *, only: str | None = None) -> dict[str, Any]:
             }
         )
     return {"manifest_version": MANIFEST_VERSION, "sources": sources}
+
+
+def _explicit_key(bindings: Sequence[OperationSpec], raw: RawOperation) -> str | None:
+    """Ключ, под которым explicit-источник выбирает операцию, или ``None``.
+
+    Правило то же, что у привязки: закреплённый маршрут сильнее ``operationId``.
+    Один ``operationId`` бывает у нескольких ручек, а у операции без
+    ``operationId`` другого адреса, кроме маршрута, нет.
+    """
+    for spec in bindings:
+        if spec.method and spec.path:
+            if (spec.method, spec.path) == (raw.method, raw.path):
+                return spec.key
+        elif spec.operation_id and spec.operation_id == raw.operation_id:
+            return spec.key
+    return None
 
 
 # ---------------------------------------------------------------------- add

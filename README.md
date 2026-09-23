@@ -3,585 +3,315 @@
 Тестовые контракты, JSON Schema, d42-схемы и operation-aware моки, сгенерированные из
 checked-in OpenAPI.
 
-**Geas** — обязательное условие или запрет из ирландской и шотландской традиции:
-соблюдение даёт силу, нарушение неизбежно имеет последствия. Здесь таким условием
-становится OpenAPI-контракт: библиотека превращает его в исполняемые схемы и сразу
-показывает место, где fixture, mock или настоящий запрос перестал ему соответствовать.
+**Geas** — в ирландской и шотландской традиции обязательное условие, нарушение которого
+неизбежно имеет последствия. Здесь такое условие — OpenAPI-контракт: geas превращает его
+в исполняемые схемы и показывает место, где fixture, мок или настоящий запрос перестал ему
+соответствовать.
 
-- Версия: **0.3.0**
+- Версия: **0.4.0**
 - Python: **3.10+**
 - Ядро зависит только от `jsonschema[format-nongpl]` и `PyYAML`. d42 и JJ — опциональные extras.
 
----
+## Что делает geas
 
-## 1. Зачем это нужно: contract drift
+Мок в тесте отдаёт тело, написанное вручную. Когда бэкенд меняет схему, мок продолжает
+отдавать старое тело, и тест остаётся зелёным, хотя проверяет уже устаревшую фикстуру.
+geas связывает тесты со спецификацией:
 
-Тест поднимает мок и кладёт в него руками написанное тело ответа. Бэкенд меняет схему:
-переименовывает поле, делает его nullable, убирает из `required`, добавляет вариант в
-`enum`. Мок продолжает отдавать старое тело, тест продолжает быть зелёным — и остаётся
-зелёным ровно до того момента, когда фича доезжает до продакшена. Это и есть **contract
-drift**: тест проверяет не сервис, а собственную устаревшую фикстуру.
+- **генерирует из OpenAPI** (Swagger 2.0 или OpenAPI 3.0.x) контракт каждой выбранной
+  операции: JSON Schema и d42-схемы для тел запроса и ответа, параметров и заголовков;
+- **даёт типизированный доступ** к операциям: `operations.api.create_document`;
+- **проверяет моки**: тело ответа — до регистрации мока, каждый перехваченный запрос — при
+  выходе из блока;
+- **генерирует фикстуры** по контракту и позволяет подменить генераторы отдельных полей;
+- **ловит drift в CI**: `geas check` падает, если закоммиченные артефакты разошлись со
+  спецификацией.
 
-Библиотека закрывает это одним воспроизводимым пайплайном:
+Неподдержанная конструкция спецификации ломает генерацию и никогда не превращается молча в
+«любое значение». Осознанное исключение оформляется [waiver'ом](docs/waivers.md) с
+владельцем и сроком.
 
-```
-checked-in OpenAPI
-  → нормализованный контракт
-  → generated JSON Schema и d42
-  → generator overlays
-  → generated operation handles
-  → operation-aware JJ-моки
-  → проверка drift в CI
-```
-
-Что даёт каждое звено:
-
-| Звено | Что происходит |
-| --- | --- |
-| **checked-in OpenAPI** | спецификация лежит в репозитории; сеть не используется никогда |
-| **нормализованный контракт** | Swagger 2.0 и OpenAPI 3.0.x сводятся к одному IR; неподдержанная конструкция — ошибка с точным адресом, а не «любое значение» |
-| **generated JSON Schema** | точная семантика `oneOf`, `discriminator`, `format` и границ; работает без extras |
-| **generated d42** | параллельное представление того же контракта для генерации фикстур |
-| **generator overlays** | подмена генератора отдельного листа (осмысленные названия вместо `9-hK_2 0zQ`) без правки generated-файлов |
-| **generated operation handles** | статический typed namespace: `operations.ws2.add_ticket` |
-| **operation-aware JJ-моки** | тело мока валидируется **до** регистрации, каждый перехваченный запрос — **после** выхода из блока |
-| **проверка drift в CI** | `geas check` роняет сборку, если закоммиченные артефакты разошлись со спецификацией |
-
-Главный принцип — **fail closed**. Ни одна неподдержанная конструкция не превращается
-молча в «принимает что угодно». Единственное послабление — явный, срочный и закреплённый
-[waiver](docs/waivers.md).
-
----
-
-## 2. Быстрый старт
-
-### Установка
+## Установка
 
 ```bash
-pip install geas            # ядро: JSON Schema + CLI + drift-check
-pip install 'geas[d42]'     # + генерация d42-схем и фикстур
+pip install geas            # контракты, JSON Schema, CLI, geas check
+pip install 'geas[d42]'     # + d42-схемы, фикстуры, overlay'и
 pip install 'geas[jj]'      # + operation-aware моки
 pip install 'geas[all]'     # всё сразу
 ```
 
-### `init` — каркас manifest и waivers
+| Extra | Зависимость | Что без него не работает |
+| --- | --- | --- |
+| — | — | всё остальное работает: manifest, генерация, JSON Schema, CLI, `validate_*` |
+| `[d42]` | `d42>=2,<3` | d42-схемы, `build_fixture`, `overlay_generators`; `update`/`check`, если d42 включён хотя бы у одной операции |
+| `[jj]` | `jj>=2.9,<3` | `operation.mock()` |
+
+Без нужного extra вы получите `MissingExtraError` с командой установки, например:
+
+```
+MissingExtraError: operation-aware моки требует опциональной зависимости. Установите: pip install 'geas[jj]'
+```
+
+`MissingExtraError` наследуется и от `ContractError`, и от `ImportError`.
+
+В тестовом проекте фиксируйте точную версию geas. Версия генератора записывается в
+артефакты, и после её смены нужно выполнить `geas update`.
+
+## Быстрый старт
 
 ```bash
-geas -m manifest.yaml init \
-    --source api/openapi.yaml \
-    --directory demo/generated \
-    --package demo.generated
+# 1. manifest и waivers
+geas -m contracts/manifest.yaml init \
+    --source ../api/openapi.yaml \
+    --package app.contracts.generated \
+    --directory ../app/contracts/generated
+
+# 2. какие операции есть в спецификации
+geas -m contracts/manifest.yaml list
+
+# 3. добавить нужную операцию
+geas -m contracts/manifest.yaml add api.createDocument --source main --operation-id createDocument
+
+# 4. сгенерировать артефакты
+geas -m contracts/manifest.yaml update
+
+# 5. проверить, что артефакты совпадают со спецификацией (это же ставится в CI)
+geas -m contracts/manifest.yaml check
 ```
 
-```
-создан manifest.yaml
-создан waivers.yaml
+Закоммитьте спецификацию, manifest, `waivers.yaml` и generated-каталог. Исключите
+generated-каталог из автоформатирования, иначе `check` будет падать:
 
-Дальше:
-  geas -m manifest.yaml list
-  geas -m manifest.yaml add <ключ> --source main --operation-id <id>
-  geas -m manifest.yaml update
-  geas -m manifest.yaml check   # это и ставится в CI
+```toml
+[tool.ruff]
+extend-exclude = ["**/generated/**"]
 ```
 
-Получившийся `manifest.yaml`:
+Все команды и флаги описаны в [docs/cli.md](docs/cli.md). Если в проекте уже есть моки,
+написанные вручную, воспользуйтесь [docs/migration.md](docs/migration.md). Полный рабочий
+пример лежит в [examples/consumer](examples/consumer).
+
+## Manifest
+
+Manifest описывает, что генерировать и к какой операции спецификации привязан каждый
+ключ. Все пути в нём отсчитываются от каталога самого manifest.
 
 ```yaml
 version: 1
+
 output:
-  directory: demo/generated
-  package: demo.generated
-waivers: waivers.yaml
-policies:
+  directory: app_contracts/generated     # generated-каталог
+  package: app_contracts.generated       # имя, под которым его импортируют тесты
+
+waivers: waivers.yaml                    # по умолчанию waivers.yaml рядом с manifest
+
+policies:                                # необязательно; здесь значения по умолчанию
   waiver_max_days: 90
   waiver_warn_days: 14
   unknown_formats: reject
+
 sources:
   main:
     path: api/openapi.yaml
-    selection: explicit
-operations: {}
-```
+    selection: explicit                  # explicit (по умолчанию) или all
+    # root: api                          # корень для межфайловых $ref; по умолчанию каталог спецификации
+    # base_path: /api/v1                 # префикс маршрутов
 
-### `list` — что вообще есть в источнике
-
-```bash
-geas -m manifest.yaml list
-```
-
-```
-источник main: api/openapi.yaml [openapi30]
-  режим выбора: explicit, операций: 3
-    GET     /api/v1/workspaces/{workspaceId}/documents
-      operationId=listDocuments  ключ=-
-      responses: 200:application/json, 400:application/json
-  * POST    /api/v1/workspaces/{workspaceId}/documents
-      operationId=createDocument  ключ=api.createDocument
-      request: application/json
-      responses: 200:application/json, 400:application/json
-
-* — операция выбрана manifest и попадает в generated-артефакты
-```
-
-### `add` — положить операцию в allowlist
-
-```bash
-geas -m manifest.yaml add ws2.addTicket \
-    --source main --operation-id addTicket
-```
-
-```
-операция ws2.addTicket добавлена в /path/to/manifest.yaml
-Теперь запустите 'geas update', чтобы обновить артефакты
-```
-
-`add` **транзакционен**: операция целиком нормализуется и рендерится во временный каталог
-до того, как manifest будет тронут. Если конструкция не поддержана, manifest остаётся
-байт-в-байт прежним, а в stderr печатается ошибка с готовым рецептом waiver'а.
-Команда также фиксирует найденные `operation_id`, method, полный path, единственные JSON
-request content type и успешный response-вариант, а Python path выводит из стабильного ключа.
-Если request или успешный response неоднозначны, нужно передать соответствующий селектор явно.
-
-### `update` — сгенерировать артефакты
-
-```bash
-geas -m manifest.yaml update
-```
-
-```
-обновлено файлов: 8 в /path/to/demo/generated
-```
-
-### `check` — проверить, что закоммиченное совпадает со спецификацией
-
-```bash
-geas -m manifest.yaml check
-```
-
-```
-артефакты актуальны: 8 файл(ов)
-```
-
-Расхождение печатается в stderr и даёт код возврата `1`:
-
-```
-generated-артефакты разошлись со спецификацией:
-  отличается:  contracts/api__delete_document.json
-
-Запустите 'geas update' и закоммитьте результат
-```
-
-### `show` — какие поля разрешает контракт
-
-```bash
-geas -m manifest.yaml show ws2.addTicket --direction response --status 200
-```
-
-```
-ws2.addTicket
-Response 200 application/json
-
-$ref #/$defs/ResponseDto; object; дополнительные свойства разрешены
-├── description — optional; string
-├── entityId — optional; integer; format int64
-├── payload — optional; $ref #/$defs/ObjectNode; object; дополнительные свойства разрешены
-└── rc — required; string; enum["OK", "ERROR"]
-
-JSON Schema:
-  /abs/path/schemas/generated/contracts/ws2__add_ticket.json#/responses/0/schema
-
-d42:
-  schemas.generated._d42.ws2__add_ticket_response:GeneratedResponseDtoSchema
-
-d42 source:
-  /abs/path/schemas/generated/_d42/ws2__add_ticket_response.py
-```
-
-Команда читает только уже сгенерированные артефакты: она ничего не перегенерирует, не
-открывает upstream OpenAPI, не ходит в сеть и не требует extra `[d42]`.
-
-Полный справочник по командам и флагам — [docs/cli.md](docs/cli.md).
-
----
-
-## 3. Архитектура
-
-```
-geas/                  ядро: manifest, IR, нормализация, JSON Schema, артефакты, CLI
-geas/dialects/         адаптеры диалектов: swagger2, openapi30
-geas/integrations/d42/ опционально: IR → d42 2.x, рендер, overlays, фикстуры
-geas/integrations/jj/  опционально: OperationHandle.mock() → JJ
-```
-
-**Ядро независимо.** Оно импортирует только `jsonschema` и `PyYAML`. Ни один модуль ядра
-не импортирует `d42` или `jj` на уровне модуля. Отложенный импорт есть ровно в трёх точках:
-`OperationHandle.mock()`, `OperationHandle.d42_schema()` и рендер d42-модулей внутри
-`render_artifacts`. Если extra не установлен, поднимается `MissingExtraError` с точной
-командой установки.
-
-**Гарантия.** Ядро и generated-реестр импортируются на голом окружении без d42 и без JJ.
-Это проверяется тестами, которые импортируют пакет в подпроцессе с заблокированными
-`d42` и `jj` в `sys.meta_path`.
-
-**Адаптеры диалектов.** Диалект отвечает ровно за одно: привести свой документ к
-диалектно-нейтральной `RawOperation`. Ниже по стеку — нормализация, JSON Schema, d42,
-runtime, CLI — про версию спецификации уже не знают. Различия (`definitions` против
-`components.schemas`, `in: body` против `requestBody`, `collectionFormat` против
-`style`/`explode`, `x-nullable` против `nullable`, `consumes`/`produces` против `content`)
-исчезают на границе `dialects/`.
-
-Подробное обоснование решений — [ADR 0001](docs/adr/0001-architecture.md).
-
----
-
-## 4. Режимы выбора операций: `explicit` и `all`
-
-Режим задаётся у источника — `sources.<name>.selection`.
-
-### `explicit` (по умолчанию)
-
-Генерируются **только** операции, перечисленные в `operations`. Запись одновременно
-работает как allowlist и как закрепление привязки: `operation_id`, `method`, `path`,
-`request.content_type` и выбранные `responses` сверяются со спецификацией на каждом
-прогоне. Любое расхождение — `ManifestBindingError`, генерация падает.
-
-```yaml
-sources:
-  main: {path: api/openapi.yaml, selection: explicit, base_path: /api/v1}
 operations:
-  ws2.addTicket:
+  api.createDocument:                    # стабильный ключ операции
     source: main
-    operation_id: addTicket
+    operation_id: createDocument
     method: POST
-    path: /api/v1/queues/{queueId}/tickets
+    path: /api/v1/workspaces/{workspaceId}/documents
     request: {content_type: application/json}
     responses:
-      - {status: 200, content_type: application/json}
-    python_path: [ws2, add_ticket]
+      - {status: 201, content_type: application/json}
+    python_path: [api, create_document]
+    # non_waivable: [...]                # поля, которые нельзя ослабить, см. docs/waivers.md
+    # d42: false                         # не генерировать d42-схемы для операции
 ```
 
-Операция связывается со спецификацией либо по `operation_id`, либо по паре
-`method` + `path`; без того и без другого запись отклоняется. Если один `operationId`
-встречается в источнике несколько раз, требуется уточнить `method` и `path`.
+Записи операций обычно создаёт `geas add`, но их можно писать и вручную.
 
-Ключ операции задаётся вручную и является стабильным именем: generated Python path
-строится из **ключа**, а не из `operationId`. Переименовали `operationId` на бэкенде —
-падает binding, но публичное Python-имя само не меняется.
-
-Если в manifest уже есть операции, но какой-то `explicit`-источник не покрыт ни одной из
-них, это ошибка manifest (почти наверняка опечатка в имени источника). Пустой
-`explicit`-источник допустим только пока `operations` пуст — то есть сразу после `init`.
-
-### `all`
-
-Генерируются все операции источника. Ключ строится автоматически как
-`<имя источника>.<operationId>`, поэтому:
-
-- операция **без** `operationId` — ошибка (ключ невозможно построить детерминированно);
-- дублирующийся `operationId` внутри источника — ошибка.
-
-Запись в `operations` для такого источника необязательна и нужна только чтобы уточнить
-`python_path`, сузить набор вариантов ответа, задать `non_waivable` или выключить d42.
-
-```yaml
-sources:
-  main: {path: api/openapi.yaml, selection: all}
-operations: {}
-```
-
-```
-источник main: api/openapi.yaml [openapi30]
-  режим выбора: all, операций: 2
-  * GET     /trees
-      operationId=getTree  ключ=main.getTree
-```
-
-**Что выбирать.** `explicit` — для большой чужой спецификации, где нужны три операции из
-двухсот и важно, чтобы изменение привязки ломало сборку. `all` — для маленькой
-спецификации, которую ведёт та же команда.
-
----
-
-## 5. CLI
-
-```
-geas [-h] [--version] [-m MANIFEST] {init,list,inspect,add,update,check,diff,show}
-```
-
-| Команда | Что делает |
+| Ключ операции | Значение |
 | --- | --- |
-| `init` | создать минимальный `manifest.yaml` и `waivers.yaml`, ничего не затирая |
-| `list` (алиас `inspect`) | показать источники, операции, варианты и причины неподдержки |
-| `add` | транзакционно добавить операцию в explicit-allowlist |
-| `update` | детерминированно перегенерировать артефакты |
-| `check` | проверить рабочее дерево на drift, ничего не меняя |
-| `diff` | семантический diff контрактов относительно закоммиченных артефактов |
-| `show` | показать форму уже сгенерированного контракта: поля, обязательность, ограничения и адреса артефактов |
+| `source` | имя источника; обязательно |
+| `operation_id` | `operationId` в спецификации |
+| `method`, `path` | маршрут; `path` указывается полностью, с префиксом источника |
+| `request.content_type` | закрепить одно тело запроса; остальные в контракт не попадут |
+| `responses` | закрепить варианты ответа (`status` — число или `default`, `content_type` необязателен); без списка берутся все |
+| `python_path` | путь в generated namespace, минимум два сегмента; по умолчанию каждый сегмент ключа переводится в snake_case (`api.createDocument` → `api.create_document`) |
+| `non_waivable` | поля, которые нельзя ослабить waiver'ом, см. [docs/waivers.md](docs/waivers.md#non_waivable) |
+| `d42` | `false` — не генерировать d42-схемы для операции |
 
-`list` отвечает на вопрос «что вообще есть в спецификации», `show` — «что
-разрешает уже закреплённый контракт»: первая читает OpenAPI, вторая — только
-generated-артефакты и ничего не перегенерирует.
+Операция связывается со спецификацией по `operation_id`, по паре `method` + `path` или по
+всем трём. Если один `operationId` встречается у нескольких ручек, укажите `method` и `path`.
 
-Коды возврата:
+Ключ операции — её стабильное имя в вашем проекте. Имя в тестах строится из ключа, а не
+из `operationId`, поэтому переименование `operationId` на бэкенде ломает привязку, но не
+меняет имя в тестах.
 
-| Код | Значение |
-| --- | --- |
-| `0` | успех, расхождений нет |
-| `1` | ошибка контракта: drift, binding, waiver, неподдержанная конструкция |
-| `2` | ошибка использования CLI |
+Префикс маршрута: в Swagger 2.0 `basePath` входит в маршрут автоматически, в OpenAPI 3.0
+`servers` игнорируется. Чтобы задать или переопределить префикс, используйте `base_path`
+у источника.
 
-Полный справочник по флагам — [docs/cli.md](docs/cli.md).
+### Режимы выбора: `explicit` и `all`
 
----
+**`explicit`** (по умолчанию) генерирует только операции из `operations`. На каждом
+прогоне каждая запись сверяется со спецификацией: `operationId`, метод, маршрут, content
+type запроса и закреплённые варианты ответа. Любое расхождение — ошибка привязки, и
+генерация падает. Подходит для большой спецификации, из которой нужна малая часть.
 
-## 6. Generated-артефакты
+Если в manifest уже есть операции, каждый `explicit`-источник должен использоваться хотя
+бы одной из них. Иначе это ошибка manifest: скорее всего, опечатка в имени источника.
 
-`update` пишет в `output.directory` следующий набор:
+**`all`** генерирует все операции источника под ключами `<источник>.<operationId>`.
+Каждой операции нужен уникальный `operationId`. Запись в `operations` необязательна: она
+нужна, только чтобы задать `python_path`, сузить варианты ответа, объявить `non_waivable`
+или отключить d42. Подходит для небольшой спецификации, которую ведёт та же команда.
 
-| Файл | Зачем он |
-| --- | --- |
-| `__init__.py` | реэкспорт `operations`, `Operations` и `REGISTRY` |
-| `operations.py` | статический typed namespace операций; атрибуты объявлены как `property`, поэтому тип виден IDE и mypy, а документ контракта читается лениво |
-| `_registry.py` | индекс «ключ операции → слаг файла» и сам `OperationRegistry` |
-| `contracts/<slug>.json` | нормализованный контракт операции; **внутри лежат JSON Schema** тела запроса, тел ответов и всех параметров |
-| `_d42/<slug>_request.py`, `_d42/<slug>_response.py` | generated d42-схемы направления; создаются, только если d42 включён и в направлении есть тело |
-| `_d42/__init__.py` | пакет d42-модулей; появляется только вместе с ними |
-| `_generated.json` | описание набора: `artifact_format`, `generator`, `output`, `operations` (`slug` + семантический `fingerprint`), общий `fingerprint`, список `owned`-файлов и `digests` |
+## Использование в тестах
 
-Свойства набора:
-
-- **детерминированность** — стабильная сортировка, UTF-8, `\n`, ни timestamp, ни абсолютных
-  путей, ни случайных значений. Повторный `update` без изменения входов даёт байт-в-байт
-  тот же результат;
-- **атомарность записи** — сначала рендерится весь набор (все ошибки случаются здесь),
-  потом каждый файл пишется через временный файл рядом и `os.replace`;
-- **owned-файлы** — удаляются только те файлы, которые генератор сам записал в прошлый раз
-  (список `owned` в `_generated.json`), с проверкой на выход за каталог и на symlink.
-
-Файлы помечены шапкой «сгенерировано автоматически»; править их руками бессмысленно —
-`check` уронит CI на расхождении.
-
-### Как этим пользоваться
+### Операции
 
 ```python
-from demo.generated import operations
+from app_contracts.generated import operations
 
-op = operations.ws2.add_ticket
-op.key  # 'ws2.addTicket'
+op = operations.api.create_document
+
+op.key  # 'api.createDocument'
 op.method  # 'POST'
-op.path  # '/api/v1/queues/{queueId}/tickets'
-op.request.path  # (ParameterView(name='queueId', ...),)
-op.request.query  # параметры query
+op.path  # '/api/v1/workspaces/{workspaceId}/documents'
+op.request.path  # path-параметры: (ParameterView(name='workspaceId', ...),)
+op.request.query  # query-параметры; есть также header и cookie
 op.request.body()  # RequestBodyView: content_type, required, json_schema, d42_export
-op.responses  # (ResponseView(status=200, content_type='application/json', ...),)
-op.response(status=200)  # выбор варианта; при единственном варианте аргументы можно опустить
-op.unsupported  # варианты, не представимые контрактом, с причинами
-op.describe_response(status=200)  # человекочитаемая форма контракта строкой
+op.responses  # все варианты ответа
+op.response(status=201)  # один вариант; если вариант один, аргументы можно опустить
+op.unsupported  # варианты, которые нельзя выразить контрактом, с причинами
 ```
 
-Валидация вручную, без мока:
+`response()` и `request.body()` выбирают вариант сами, если он единственный. Если
+вариантов несколько, передайте `status`/`content_type`, иначе будет
+`ResponseVariantError`.
+
+`operations` — статический модуль: IDE и mypy видят все операции. Для инструментов есть
+строковый доступ: `operations.by_key("api.createDocument")` и `operations.keys()`.
+
+### Моки
+
+Нужен extra `[jj]`.
 
 ```python
-op.validate_response(body, status=200)
-op.validate_request_body(payload)
-```
-
-Generated d42-схема варианта — через `d42_schema()`; имя переменной берётся из самого
-контракта (`d42_export`), угадывать его не нужно:
-
-```python
-from geas import Direction
-
-variant = op.response(status=200)
-GeneratedTicketSchema = op.d42_schema(Direction.RESPONSE, export=variant.d42_export)
-```
-
-> `export` обязателен: вызов `op.d42_schema(Direction.RESPONSE)` без него всегда поднимает
-> `OperationLookupError`, несмотря на то что у параметра есть значение по умолчанию.
-
-Строковый доступ `operations.by_key("ws2.addTicket")` и `operations.keys()` оставлены как
-escape hatch для инструментов; в тестах используйте generated namespace.
-
-### Что разрешает контракт и где он лежит
-
-Ручной alias над generated-схемой сам по себе не показывает форму контракта: в файле
-проекта видно только имя операции. Чтобы не искать generated-файл глазами, выбранное
-тело запроса и выбранный вариант ответа знают свои координаты:
-
-```python
-response = operations.ws2.add_ticket.response(status=200)
-
-response.contract_file  # PosixPath('/abs/.../generated/contracts/ws2__add_ticket.json')
-response.json_pointer  # '/responses/0/schema'  — RFC 6901
-response.contract_path  # '/abs/.../ws2__add_ticket.json#/responses/0/schema'
-response.d42_module  # 'schemas.generated._d42.ws2__add_ticket_response'
-response.d42_export  # 'GeneratedResponseDtoSchema'
-response.d42_reference  # 'schemas.generated._d42.ws2__add_ticket_response:GeneratedResponseDtoSchema'
-response.d42_source_path  # PosixPath('/abs/.../generated/_d42/ws2__add_ticket_response.py')
-```
-
-`d42_source_path` вычисляется по раскладке артефактов, **без импорта** d42-модуля:
-описание контракта работает и там, где extra `[d42]` не установлен. Если у варианта
-своей generated d42-схемы нет (d42 выключен, контракт рекурсивен, вариант без тела),
-все d42-координаты равны `None` — путь к чужой схеме не подставляется.
-
-Человекочитаемая форма — `describe()`; метод **возвращает строку** и ничего не печатает
-и не перегенерирует:
-
-```python
-print(response.describe())
-print(operations.ws2.add_ticket.describe_response(status=200))  # то же самое
-print(operations.ws2.add_ticket.describe_request_body())  # для запроса
-print(operations.ws2.add_ticket.describe_response(status=200, max_depth=2))
-```
-
-```
-ws2.addTicket
-Response 200 application/json
-
-$ref #/$defs/ResponseDto; object; дополнительные свойства разрешены
-├── description — optional; string
-├── entityId — optional; integer; format int64
-├── payload — optional; $ref #/$defs/ObjectNode; object; дополнительные свойства разрешены
-└── rc — required; string; enum["OK", "ERROR"]
-
-JSON Schema:
-  /abs/path/schemas/generated/contracts/ws2__add_ticket.json#/responses/0/schema
-
-d42:
-  schemas.generated._d42.ws2__add_ticket_response:GeneratedResponseDtoSchema
-
-d42 source:
-  /abs/path/schemas/generated/_d42/ws2__add_ticket_response.py
-```
-
-Формат — компактная навигация, а не второй валидатор: описание не ослабляет контракт
-(неизвестное ключевое слово названо, а не превращено в «любое значение»), не разрешает
-внешние `$ref`, обрывает рекурсию маркером и ограничивает глубину `max_depth`. Точная
-семантика всегда доступна по напечатанному пути. Разбор строк описания в тестах — плохая
-идея: для программного доступа есть `json_schema` и `geas show --json`.
-
-То же самое из терминала — `geas show`, см. [docs/cli.md](docs/cli.md#show).
-
----
-
-## 7. Канонический API моков
-
-```python
-async with operations.ws2.add_ticket.mock(
+async with operations.api.create_document.mock(
     response=response_body,
-    path_params={"queueId": queue_id},
+    status=201,
+    path_params={"workspaceId": workspace_id},
     wait_for_requests=1,
 ) as mock:
     await page.submit()
 
-assert len(mock.history) == 1  # cardinality-ассерт пишет тест
-```
-
-Аргументы `mock()`:
-
-| Аргумент | Смысл |
-| --- | --- |
-| `response` | тело ответа; проверяется по контракту **до** регистрации мока |
-| `status` | HTTP-статус; он же сужает выбор варианта ответа |
-| `content_type` | сужает выбор варианта ответа |
-| `path_params` | закрепляемые сегменты маршрута; проверяются по схеме параметра |
-| `query_params` | сузить matcher по query-параметрам |
-| `headers` | сузить matcher по заголовкам **запроса** |
-| `history_callback` | вызвать consumer-hook после получения history и cleanup, например для Allure-вложения |
-| `response_headers` | заголовки ответа; `Content-Type` подставляется из контракта, если не задан |
-| `wait_for_requests` | сколько запросов дождаться перед выходом из блока |
-| `timeout` | таймаут ожидания, секунды (по умолчанию `5.0`) |
-
-### Жизненный цикл
-
-**До входа в блок** (внутри `mock()`, ещё до регистрации мока в JJ):
-
-1. проверяется версия установленного JJ (проверенный диапазон — `>=2.9,<3`);
-2. проверяется, что все `path_params` описаны маршрутом и каждое значение валидно по схеме
-   своего параметра;
-3. выбирается вариант ответа по `status`/`content_type`; неоднозначный выбор — ошибка,
-   «молча взять первый» библиотека не умеет;
-4. тело ответа валидируется по **JSON Schema** контракта;
-5. тело ответа независимо валидируется по **generated d42** — если extra `[d42]` установлен
-   и для операции d42 сгенерирован. Два пути не дублируют друг друга: d42-проекция `oneOf`
-   шире исходной семантики, и точность держит именно JSON Schema;
-6. проверяются диапазон статуса (`100..599`) и совпадение `Content-Type` ответа с контрактом.
-
-Невалидное тело ответа падает здесь — до приложения оно не доезжает:
-
-```
-ResponseContractError: тело ответа 200:application/json: 'id' is a required property
-  ожидалось: ['id', 'slug', 'title']
-  фактически: {'nope': 1} [operation=ws2.addTicket, direction=response, ...]
-```
-
-**На входе в блок**: строятся matcher (метод, маршрут с подставленными `path_params`,
-`query_params`, `headers`) и ответ; мок регистрируется как `disposable` с
-`prefetch_history`.
-
-**На выходе из блока**:
-
-7. если тело сценария не бросило исключение и задан `wait_for_requests` — дожидаемся
-   запросов с `timeout`;
-8. мок снимается (cleanup/deregister) — всегда, даже если тело сценария упало;
-9. забирается история; она остаётся доступной через `mock.history` и `mock.requests`;
-10. если задан `wait_for_requests`, а перехвачено меньше — ошибка;
-11. **каждый** перехваченный запрос валидируется по контракту: метод, маршрут,
-    path/query/header/cookie-параметры с их сериализацией и обязательностью, тело вместе с
-    `Content-Type`.
-
-```
-RequestContractError: request #0: тело запроса обязательно, но запрос пришёл без тела
-  ожидалось: тело ['application/json']
-  фактически: пусто [operation=ws2.addTicket, direction=request, pointer=/body]
-```
-
-Если тело сценария бросило исключение, оно остаётся **первичным**: cleanup всё равно
-выполняется, а вторичные диагностики прикладываются к нему заметками (`add_note`, Python
-3.11+) и всегда доступны через `mock.diagnostics`.
-
-### `wait_for_requests` — это не ассерт на количество
-
-`wait_for_requests=N` решает ровно одну задачу: **синхронизацию жизненного цикла**. Он
-даёт асинхронному приложению время дослать запросы до того, как мок будет снят и история
-собрана. Проверяет он только нижнюю границу: «перехвачено не меньше N».
-
-```
-ContractMockError: ожидалось минимум 1 запрос(ов), перехвачено 0 [operation=ws2.addTicket]
-```
-
-Он **не заменяет** ассерт на точное количество вызовов: три запроса вместо одного
-`wait_for_requests=1` пропустит молча. Cardinality проверяет тест:
-
-```python
-async with operations.ws2.add_ticket.mock(response=body, wait_for_requests=1) as mock:
-    await page.submit()
-
 assert len(mock.history) == 1
 request = mock.requests[0]
-assert request.method == "POST"
 ```
 
-### Ограничения мока
+| Аргумент | Значение |
+| --- | --- |
+| `response` | тело ответа; проверяется по контракту до регистрации мока |
+| `status` | HTTP-статус; он же выбирает вариант ответа |
+| `content_type` | выбирает вариант ответа, если по статусу их несколько |
+| `path_params` | значения сегментов маршрута; проверяются по схемам параметров |
+| `query_params` | сузить matcher по query-параметрам |
+| `headers` | сузить matcher по заголовкам запроса |
+| `response_headers` | заголовки ответа; `Content-Type` подставляется из контракта, если не задан |
+| `wait_for_requests` | сколько запросов дождаться перед выходом из блока |
+| `timeout` | сколько ждать запросы, секунд; по умолчанию `5.0` |
+| `history_callback` | функция, которая получит историю после снятия мока, например для вложения в Allure |
 
-- Готовый чужой `jj.Mocked` библиотека не принимает: восстановить контракт интроспекцией
-  matcher'а и response'а невозможно, поэтому мок всегда строится из `OperationHandle`.
-- В один `ContractMock` нельзя войти дважды — создайте новый.
-- Persistent-моки не поддерживаются (см. «Ограничения v0.1»).
-- Значение `path_params`, содержащее `/`, отклоняется: оно разбило бы маршрут на лишние
-  сегменты.
-- Если выбран вариант ответа `default`, конкретный HTTP-статус нужно передать аргументом
-  `status`.
+**До входа в блок** мок проверяет версию JJ (`>=2.9,<3`), `path_params`, выбор варианта
+ответа, тело ответа (по JSON Schema, а при установленном `[d42]` — ещё и по d42-схеме),
+статус (`100..599`) и `Content-Type` из `response_headers`. Неверный мок не доходит до
+приложения:
 
----
+```
+ResponseContractError: тело ответа 201:application/json: 'id' is a required property
+  ожидалось: ['id', 'title', 'visibility']
+  фактически: {'nope': 1} [operation=api.createDocument, direction=response, pointer=/, schema_pointer=/required]
+```
 
-## 8. Overlays: осмысленные данные без потери контракта
+**При выходе из блока** мок дожидается `wait_for_requests` запросов, снимается (всегда,
+даже если тест упал), сохраняет историю в `mock.history` и `mock.requests` и проверяет
+**каждый** перехваченный запрос: метод, маршрут, параметры с их сериализацией и
+обязательностью, тело и его `Content-Type`.
 
-Сгенерированная схема описывает контракт, но не описывает *осмысленные* данные:
-`schema.str` в поле «название» даст `"9-hK_2 0zQ"`, и по такому скриншоту тест не
-почитаешь. `overlay_generators` подменяет генератор **отдельного листа**, ничего не ломая
-в остальном контракте.
+```
+RequestContractError: тело запроса application/json: 'title' is a required property
+  ожидалось: ['title']
+  фактически: {} [operation=api.createDocument, direction=request, pointer=/, schema_pointer=/required]
+```
+
+Если тело блока бросило исключение, оно остаётся главным. Ошибки мока прикладываются к
+нему заметками (`add_note`, Python 3.11+) и доступны в `mock.diagnostics`.
+
+**`wait_for_requests` не проверяет количество вызовов.** Он только ждёт, пока приложение
+отправит запросы, и падает, если их пришло меньше N:
+
+```
+ContractMockError: ожидалось минимум 1 запрос(ов), перехвачено 0 [operation=api.createDocument]
+```
+
+Три запроса вместо одного он пропустит. Точное количество проверяйте сами:
+`assert len(mock.history) == 1`.
+
+Ограничения:
+
+- мок создаётся только из generated-операции; готовый `jj.Mocked` передать нельзя;
+- в один мок нельзя войти дважды, для повторного использования создайте новый;
+- значение `path_params` не может содержать `/`;
+- для варианта ответа `default` передайте конкретный числовой `status`.
+
+### Проверка без мока
+
+```python
+op.validate_response(body, status=201)  # ResponseContractError, если тело не подходит
+op.validate_request_body(payload)  # RequestContractError, если тело не подходит
+```
+
+Без extras проверка идёт по JSON Schema. При установленном `[d42]` добавляется проверка
+по d42-схеме.
+
+### d42-схемы и фикстуры
+
+Нужен extra `[d42]`.
+
+```python
+from geas import Direction
+from geas.integrations.d42 import build_fixture
+
+DocumentSchema = operations.api.create_document.d42_schema(Direction.RESPONSE)
+body = build_fixture(DocumentSchema)
+```
+
+Если в направлении несколько d42-схем (например, у ответов 200 и 400 разные тела), без
+`export` будет ошибка со списком схем. Передайте имя нужной:
+
+```python
+ErrorSchema = op.d42_schema(Direction.RESPONSE, export=op.response(status=400).d42_export)
+```
+
+`build_fixture` детерминирован: одна и та же схема с тем же `seed` (аргумент
+необязателен) всегда даёт одно и то же значение. Необязательные поля в фикстуру не
+попадают, поэтому добавление необязательного поля в спецификацию фикстуру не меняет.
+
+Для некоторых операций d42-схемы не создаются. Это бывает с рекурсивными схемами и с
+конструкциями, которые d42 не умеет выражать: несливаемым `allOf`, `multipleOf`,
+`pattern` вместе с границами длины. Причину печатает `geas update`, и её же называет
+ошибка `d42_schema()`. Моки и `validate_*` для таких операций работают по JSON Schema.
+
+### Overlay'и: осмысленные значения в фикстурах
+
+Сгенерированная схема даёт для строкового поля случайную строку. Чтобы фикстура выглядела
+осмысленно, подмените генератор отдельного поля. Остальной контракт при этом не
+меняется:
 
 ```python
 from d42 import schema
@@ -589,69 +319,111 @@ from d42 import schema
 from geas import Direction
 from geas.integrations.d42 import EACH, build_fixture, overlay_generators
 
-op = operations.ws2.get_queue
-variant = op.response(status=200)
-generated = op.d42_schema(Direction.RESPONSE, export=variant.d42_export)
-
-QueueDetailsSchema = overlay_generators(
-    generated,
+DocumentPageSchema = overlay_generators(
+    operations.api.list_documents.d42_schema(Direction.RESPONSE),
     {
-        ("name",): schema.str("Отчёт за квартал"),
-        ("groups", EACH, "title"): schema.str("Аналитика"),
+        ("items", EACH, "title"): schema.str("Отчёт за квартал"),
     },
 )
 
-fixture = build_fixture(QueueDetailsSchema)
-# {'name': 'Отчёт за квартал', 'groups': [{'title': 'Аналитика'}, {'title': 'Аналитика'}, ...]}
+build_fixture(DocumentPageSchema)
+# {'items': [{'id': '5x PCZJr_…', 'title': 'Отчёт за квартал', 'visibility': 'private'}, …], 'total': …}
 ```
 
-Инварианты:
+- Путь — кортеж имён полей; `EACH` означает «каждый элемент массива». Вложенные массивы
+  поддерживаются: `("a", EACH, "b", EACH, "c")`.
+- Подменить можно только лист. Структура, обязательность полей и nullable остаются
+  сгенерированными.
+- Путь и тип проверяются при вызове `overlay_generators`, то есть при импорте модуля с
+  overlay'ями. Если поле переименовали в спецификации, упадёт импорт, а не тест через
+  неделю. Для `enum` подменённые значения должны входить в список допустимых.
+- Границы и `pattern` проверяются в `build_fixture`: значение сверяется с исходным
+  контрактом.
+- Результат — обычная d42-схема, с ним работают `fake()`, `%` и `make_required()`.
+  Применяйте `%` и `make_required()` **до** `overlay_generators`: они создают новую схему,
+  и проверка по исходному контракту на ней пропадёт.
 
-1. **Подменяется только генератор листа.** Структура (словари, списки) и обязательность
-   ключей всегда остаются сгенерированными; ни один объект d42 не мутируется на месте.
-2. **Путь проверяется при сборке overlay'я, а не при генерации.** Поле переименовали в
-   спецификации — падает импорт модуля с overlay'ями, а не тест через неделю.
-3. **`EACH` — публичный маркер «каждый элемент массива»**; вложенные массивы
-   поддерживаются: `("a", EACH, "b", EACH, "c")`.
-4. **Через nullable спуск прозрачен**: если по пути стоит `X | schema.none`, overlay
-   применяется к ветке `X`, а `schema.none` остаётся на месте — поле как было nullable, так
-   и осталось.
-5. **Совместимость проверяется настолько рано, насколько разрешима.** Тип ручной схемы
-   обязан совпасть с типом листа; если лист — union литералов (`enum`), ручной генератор
-   обязан быть его подмножеством.
-
-Что проверить заранее нельзя — `pattern` и границы (`minLength`, `minimum`, ...): это
-разрешимо только для конкретного значения. Поэтому `build_fixture` валидирует результат по
-**исходному, до-overlay'ному** контракту и падает `ContractOverlayError`, если ручной
-генератор вышел за его пределы. Реальные сообщения:
+Ошибки, которые вы можете увидеть:
 
 ```
-overlay /nope: ключа 'nope' нет в сгенерированной схеме. Доступны: 'groups', 'name'
-overlay /groups: подменить можно только генератор листа, а здесь ListSchema —
-  структура всегда остаётся сгенерированной
-overlay /name: тип ручной схемы не совпадает с контрактом.
-  Ожидалось: StrSchema; получено: IntSchema
-значение, выданное ручным генератором overlay'я, нарушает сгенерированный контракт:
-  Value <class 'str'> at _['name'] must have at least 1 element, but it has 0 elements
+ContractOverlayError: overlay /nope: ключа 'nope' нет в сгенерированной схеме. Доступны: 'items', 'total'
+ContractOverlayError: overlay /items: подменить можно только генератор листа, а здесь ListSchema — структура всегда остаётся сгенерированной
+ContractOverlayError: overlay /items/-/title: тип ручной схемы не совпадает с контрактом. Ожидалось: StrSchema; получено: IntSchema
+ContractOverlayError: значение, выданное ручным генератором overlay'я, нарушает сгенерированный контракт: - Value <class 'str'> at _['items'][0]['title'] must have at least 1 element, but it has 0 elements
 ```
 
-Результат overlay'я — обычная d42-схема: `fake()`, `%` (substitute) и `make_required()`
-работают на ней как на любой другой. Оговорка: `%` и `make_required()` строят **новый**
-объект и про запомненный исходный контракт не знают, поэтому порядок должен быть
-обратным — сначала `make_required` / `%`, потом `overlay_generators`.
+### Как посмотреть контракт
 
-Пути overlay'ев записаны в той же грамматике, что и contract path у waiver'ов:
-`("groups", EACH, "title")` — это `/groups/-/title`.
+Чтобы увидеть, какие поля разрешает контракт, не открывая generated-файлы:
 
----
+```python
+print(operations.api.create_document.describe_response(status=201))
+print(operations.api.create_document.describe_request_body())
+```
 
-## 9. Waivers и `non_waivable`
+```
+api.createDocument
+Response 201 application/json
 
-**Waiver** — единственный способ пропустить конструкцию, которую нормализация иначе
-отклонила бы. Он намеренно неудобен: обязательны владелец, причина, тикет, срок и
-`expected_source` — отпечаток исходного фрагмента спецификации.
+$ref #/$defs/Document; object; дополнительные свойства разрешены
+├── id — required; string; minLength 1
+├── title — required; string; minLength 1; maxLength 120
+└── visibility — required; string; enum["private", "workspace", "public"]
 
-Сообщение об ошибке печатает готовый рецепт, включая точное значение `expected_source`:
+JSON Schema:
+  /…/app_contracts/generated/contracts/api__create_document.json#/responses/0/schema
+
+d42:
+  app_contracts.generated._d42.api__create_document_response:GeneratedDocumentSchema
+
+d42 source:
+  /…/app_contracts/generated/_d42/api__create_document_response.py
+```
+
+То же из терминала: `geas show api.createDocument --status 201`, см.
+[docs/cli.md](docs/cli.md#show). Координаты доступны и программно — у
+`op.response(...)` и `op.request.body()` есть `contract_file`, `json_pointer`,
+`contract_path`, `d42_module`, `d42_export`, `d42_reference` и `d42_source_path`. Если
+d42-схемы у варианта нет, d42-координаты равны `None`. Не разбирайте текст `describe()` в
+тестах: для программного доступа есть `json_schema` и `geas show --json`.
+
+## Generated-артефакты
+
+`geas update` пишет в `output.directory`:
+
+| Файл | Что это |
+| --- | --- |
+| `__init__.py` | экспорт `operations`, `Operations` и `REGISTRY` |
+| `operations.py` | типизированный namespace операций |
+| `_registry.py` | индекс «ключ операции → файл контракта» |
+| `contracts/<slug>.json` | контракт операции: JSON Schema тел, параметров и заголовков, закреплённые варианты, статус d42 |
+| `_d42/<slug>_request.py`, `_d42/<slug>_response.py` | d42-схемы; создаются, только если d42 включён и в направлении есть тело |
+| `_generated.json` | индекс набора: версия формата и генератора, отпечатки, список файлов, которыми владеет geas |
+
+Артефакты детерминированы: повторный `update` без изменения входов даёт те же байты.
+`update` удаляет только файлы, которые сам создал раньше. Руками артефакты не правят:
+`check` уронит CI на любом расхождении.
+
+## CI
+
+```yaml
+- name: Контракты соответствуют спецификации
+  run: geas -m contracts/manifest.yaml check
+```
+
+`check` ничего не меняет и возвращает `1`, если артефакты разошлись со спецификацией или
+генерация не проходит: waiver просрочен, привязка операции сломалась, в спецификации
+появилась неподдержанная конструкция. Если d42 включён хотя бы у одной операции, в CI
+нужен extra `[d42]`. Что делать при падении, описано в
+[docs/cli.md](docs/cli.md#check-упал-в-ci).
+
+`geas diff` показывает, что именно изменилось в контракте, и отделяет смысловые изменения
+от косметики.
+
+## Waivers и `non_waivable`
+
+Если спецификация ошибается и исправить её сейчас нельзя, выпишите waiver: точечное
+послабление с владельцем, задачей и сроком. Генерация сама печатает готовую заготовку:
 
 ```
 ошибка: format 'my-custom-tag' неизвестен для type='string'. ... (contract path /body/tag)
@@ -667,276 +439,41 @@ overlay /name: тип ручной схемы не совпадает с кон�
     expires_at: <YYYY-MM-DD>
 ```
 
-Генерация падает, если waiver просрочен, выписан дальше `policies.waiver_max_days`,
-неполон, объявлен дважды, конфликтует с другим правилом на той же точке, ссылается на
-несуществующую операцию, **не понадобился** или **устарел** (исходный фрагмент изменился —
-`expected_source` больше не совпадает).
+Просроченный, ненужный или устаревший waiver ломает генерацию. `non_waivable` в manifest
+закрепляет поля, которые ослабить нельзя. Как выписывать waiver'ы, какие есть правила и
+что делать с ошибками — в [docs/waivers.md](docs/waivers.md).
 
-Отдельно — предупреждение: waiver, до истечения которого осталось не больше
-`policies.waiver_warn_days` (по умолчанию 14) дней, печатается в stderr, но сборку **не**
-роняет. Дата истечения не должна наступать внезапно посреди чужого релиза.
+## Что поддерживается
 
-### Область действия: `scope: subtree`
+Swagger 2.0 и OpenAPI 3.0.x: `$ref` (локальные и межфайловые внутри корня источника),
+`allOf`, `oneOf`, `anyOf`, `discriminator`, `nullable`/`x-nullable`,
+`readOnly`/`writeOnly`, `enum`, `format`, `pattern`, границы длины и чисел,
+`additionalProperties`, параметры в path/query/header/cookie, `collectionFormat`.
 
-Иногда дефект один, а точек — десятки: генератор Swagger 2 помечает всю request-модель
-операции как `readOnly`, и точечных waiver'ов приходится выписывать по одному на каждый
-лист. `scope: subtree` закрепляет послабление за узлом и всем поддеревом под ним:
+Отклоняются с диагностикой: OpenAPI 3.1, `not`, `if`/`then`/`else`, `const`, булевы
+схемы, `type` списком, `deepObject`/`label`/`matrix`, `in: formData`, диапазоны статусов
+`2XX`, внешние HTTP-`$ref` и `$ref` за пределы корня источника.
 
-```yaml
-  - operation: ws2.addTicket
-    direction: request
-    json_pointer: /body          # узел и всё поддерево под ним
-    scope: subtree
-    rule: ignore_read_only
-    expected_source: bf3e...     # отпечаток ВСЕГО поддерева
-    reason: "Генератор Swagger 2 помечает модель запроса addTicket как readOnly"
-    owner: adolmatov
-    ticket: SAMSARA-24126
-    expires_at: 2026-12-02
-```
+Полная таблица — [docs/support-matrix.md](docs/support-matrix.md).
 
-Поддеревом послабляются только `ignore_read_only`, `ignore_write_only` и
-`relax_required` — правила, решающие судьбу *слота* свойства, а не его содержимого.
-`expected_source` при этом считается по всему поддереву с развёрнутыми `$ref`, поэтому
-изменение внутри не проскочит молча — и потребует осознанно обновить отпечаток.
-`geas update` и `geas check` печатают, сколько точек контракта накрыла запись:
+## Ограничения
 
-```
-  waiver ws2.addTicket / request / /body / ignore_read_only (поддерево): покрыто точек контракта — 75
-```
+- Мок подключается только через `async with …mock(…)`. Декоратора и persistent-моков нет.
+- OpenAPI 3.1 не поддерживается.
+- Параметры — только скаляры и массивы скаляров.
+- Тело — только JSON: `application/json`, `…+json`, в Swagger 2.0 ещё `*/*`. Остальные
+  варианты помечаются как непредставимые, но операция генерируется.
+- geas не обращается к сети: внешние `$ref` запрещены, спецификация читается только с
+  диска.
 
-Точный waiver сильнее покрывающего поддерева, из двух вложенных поддеревьев выигрывает
-ближайшее к точке. Обоснование решений — [ADR 0002](docs/adr/0002-waiver-subtree-scope.md).
+## Документация
 
-**`non_waivable`** — обратная сторона: свойства контракта, которые нельзя ослабить никаким
-waiver'ом. Объявляются в manifest у операции:
-
-```yaml
-operations:
-  ws2.addTicket:
-    source: main
-    operation_id: addTicket
-    non_waivable:
-      - {direction: response, json_pointer: /body/rc, rules: [required, non_null, non_empty_enum]}
-```
-
-Если waiver пересекается с `non_waivable`, генерация падает; если само свойство перестало
-выполняться (поле стало необязательным, стало nullable, потеряло enum) — падает тоже.
-
-Полный формат, правила жизненного цикла и разобранный пример —
-[docs/waivers.md](docs/waivers.md).
-
----
-
-## 10. Интеграция с CI
-
-Одна команда:
-
-```yaml
-- name: contract drift
-  run: geas -m contracts/manifest.yaml check
-```
-
-`check` ничего не меняет в рабочем дереве: он рендерит набор в памяти и сравнивает с тем,
-что лежит на диске. Коды возврата стабильны и годятся для гейта: `0` — чисто, `1` — ошибка
-контракта (drift, binding, waiver, неподдержанная конструкция), `2` — ошибка использования
-CLI.
-
-`check` ловит не только «забыли перегенерировать», но и всё, что ломает генерацию:
-просроченный waiver, изменившийся `operationId`, исчезнувший вариант ответа, новую
-неподдержанную конструкцию в спецификации.
-
-Что печатается при расхождении:
-
-```
-generated-артефакты разошлись со спецификацией:
-  отсутствует: contracts/ws2__add_ticket.json
-  отличается:  operations.py
-  лишний:      contracts/ws2__old_operation.json
-
-Запустите 'geas update' и закоммитьте результат
-```
-
-Полезное дополнение — `diff`: он показывает, **что именно** изменилось в контракте, и
-отделяет семантику от оформления.
-
-```
-ws2.addTicket:
-  [контракт] ~ /responses/0/schema/$defs/Ticket/properties/title/maxLength: 120 → 200
-```
-
-`diff` возвращает `1`, если есть семантические изменения, и `0`, если изменения только
-косметические (слаг, диалект, имена d42-модулей). `--json` даёт машиночитаемый вывод с тем
-же кодом возврата.
-
-Если вы генерируете d42-артефакты, в CI-окружении должен стоять extra `[d42]` — иначе
-`check` и `update` упадут (см. следующий раздел).
-
----
-
-## 11. Опциональные зависимости
-
-| Extra | Что включает | Что без него не работает |
-| --- | --- | --- |
-| — | ядро: manifest, нормализация, JSON Schema, артефакты, CLI, runtime-валидация | — |
-| `[d42]` | `d42>=2,<3` | генерация и чтение d42-схем, `build_fixture`, `overlay_generators` |
-| `[jj]` | `jj>=2.9,<3` | `OperationHandle.mock()` |
-| `[all]` | оба | |
-| `[dev]` | оба + pytest, ruff, mypy, build | разработка самой библиотеки |
-
-Отсутствующий extra — это не `ModuleNotFoundError` из недр библиотеки, а
-`MissingExtraError` с точной командой установки. Три реальных сообщения:
-
-```
-MissingExtraError: operation-aware моки требует опциональной зависимости.
-Установите: pip install 'geas[jj]'
-
-MissingExtraError: generated d42-схемы требует опциональной зависимости.
-Установите: pip install 'geas[d42]'
-
-ошибка: генерация d42-схем для операций ws2.addTicket требует опциональной зависимости.
-Установите: pip install 'geas[d42]'
-```
-
-`MissingExtraError` наследуется и от `ContractError`, и от `ImportError`, поэтому ловится
-любым из двух.
-
-Проект, которому нужен только drift-check в CI, ставит библиотеку **без extras**: ядро и
-generated-реестр импортируются на голом окружении.
-
-Ядро использует `jsonschema[format-nongpl]`: проверки URI/IRI и остальных
-стандартных форматов остаются включены, но установка не приносит устаревший
-GPL-пакет `rfc3987`. Это позволяет использовать библиотеку в проектах с
-запретом GPL runtime-зависимостей.
-
----
-
-## 12. Матрица поддержки OpenAPI 3.0 / Swagger 2.0
-
-Каждая конструкция имеет ровно один из трёх статусов: **поддержана**, **отклоняется с
-диагностикой** или **не читается вовсе**. Полная таблица — включая колонку про то, что
-выражается в d42-проекции, а что остаётся только на JSON-Schema-пути, —
-[docs/support-matrix.md](docs/support-matrix.md).
-
-Коротко: поддержаны `$ref` (локальные и межфайловые внутри корня источника), `allOf`,
-`oneOf`, `anyOf`, `discriminator`, `nullable` / `x-nullable`, `readOnly` / `writeOnly`,
-`enum`, `pattern`, границы длины и чисел, `uniqueItems`, булев и типизированный
-`additionalProperties`, параметры в path/query/header/cookie с проверенной матрицей
-`style`/`explode`, `collectionFormat` в Swagger 2.0.
-
-Отклоняются с диагностикой: `not`, `if`/`then`/`else`, `const`, `patternProperties`,
-`propertyNames`, `contains`, `prefixItems`, `dependentSchemas`, `dependentRequired`,
-`unevaluatedProperties`, `unevaluatedItems`, `$defs`, булевы схемы, `type` списком,
-`style: deepObject` / `label` / `matrix`, `content` вместо `schema` у параметра,
-`allowReserved`, `in: formData`, диапазоны статусов вида `2XX`, внешние HTTP-`$ref`,
-`$ref` за пределы корня источника и неизвестный `format` (при `policies.unknown_formats:
-reject`).
-
-**`oneOf` в d42-проекции расширяется** до `schema.any` (то есть до `anyOf`), потому что у
-d42 нет эксклюзивного объединения. Точная семантика `oneOf` и `discriminator` целиком
-держится на JSON Schema, и именно поэтому JSON-Schema-валидация выполняется всегда и не
-отключается.
-
----
-
-## 13. OpenAPI 3.1 в v0.1 сознательно не поддерживается
-
-OpenAPI 3.1 **не является надмножеством** 3.0: в нём удалён `nullable`,
-`exclusiveMinimum`/`exclusiveMaximum` стали числовыми, `type` может быть массивом,
-появились булевы схемы и `$defs`, а Schema Object — это полноценная JSON Schema 2020-12.
-Разбирать 3.1 правилами 3.0 значит молча потерять `null` в типах и неверно прочитать
-границы.
-
-Поэтому документ с `openapi: 3.1.x` не обрабатывается «как получится», а отклоняется явной
-диагностикой:
-
-```
-ошибка: OpenAPI 3.1.0 не поддерживается в версии 0.1.
-OpenAPI 3.1 не является надмножеством 3.0: в нём удалён 'nullable',
-'exclusiveMinimum'/'exclusiveMaximum' стали числовыми, 'type' может быть массивом,
-появились булевы схемы и '$defs'. Разбирать 3.1 правилами 3.0 значит молча потерять
-контракт, поэтому библиотека отказывается это делать.
-Адаптер 3.1 добавляется отдельно (dialects/openapi31.py) без изменений в ядре. [source=main]
-```
-
-Код возврата — `1`. Адаптер 3.1 — это новый модуль в `dialects/` и одна запись в реестре,
-без изменений в ядре, генераторе, runtime и CLI.
-
----
-
-## 14. Тесты не ходят в сеть
-
-Ни библиотека, ни её тесты не делают исходящих сетевых запросов.
-
-- Внешние `$ref` (`http://`, `https://`, любой `scheme` или `netloc`) запрещены всегда и
-  отклоняются `RefResolutionError`.
-- Межфайловые `$ref` разрешаются только внутри явно заданного `sources.<name>.root`;
-  выход за корень через `..` или symlink отсекается после `resolve()`.
-- Валидатор JSON Schema получает пустой `referencing.Registry`, чей `retrieve` всегда
-  бросает исключение: попытка внешнего разрешения `$ref` превращается в ошибку контракта,
-  а не в HTTP-запрос.
-- В тестах автоиспользуемая фикстура `no_outbound_network` патчит `socket.socket.connect`
-  и `socket.create_connection` и разрешает только `AF_UNIX` и loopback (`127.0.0.0/8`,
-  `::1`) — их использует локальный HTTP-сервер моков. Попытка выйти наружу — это не
-  «медленный тест», а дефект: где-то не сработал мок.
-
-Синтетические спецификации для тестов лежат в `tests/fixtures/specs/` в вымышленном домене;
-реальных сервисов, маршрутов и идентификаторов там нет.
-
----
-
-## 15. Миграция существующих `mocked_*`-обёрток
-
-Существующие обёртки остаются тонкими функциями поверх `OperationHandle.mock()` и
-мигрируют **без изменения call sites**:
-
-```python
-def mocked_post_ticket(body, **kwargs):
-    """Тонкая обёртка: сохраняет старую сигнатуру, внутри — generated handle."""
-    return operations.ws2.add_ticket.mock(response=body, **kwargs)
-```
-
-```python
-async with mocked_post_ticket(body) as mock:  # ни один вызов не переписан
-    ...
-```
-
-Рекомендуемая целевая форма — прямой generated handle:
-
-```python
-async with operations.ws2.add_ticket.mock(response=body, wait_for_requests=1) as mock:
-    ...
-```
-
-Пошаговый план (подключение спецификации, обёртки, перевод рукописных схем в
-`overlay_generators` над сгенерированными, подключение `check` в CI) —
-[docs/migration.md](docs/migration.md).
-
----
-
-## Ограничения v0.1
-
-- **Нет decorator API.** Контракт подключается явным `async with ...mock(...)`. Декоратор
-  над сценарием отложен сознательно: он вынужден догадываться, куда отдать `ContractMock`,
-  и создаёт второй путь валидации, который придётся держать в синхроне с основным.
-- **Нет OpenAPI 3.1.** Документ отклоняется явной диагностикой (раздел 13).
-- **Нет persistent-моков.** `start()` без обязательного «закрыть и провалидировать»
-  позволил бы молча пропустить валидацию запросов. Мок регистрируется как `disposable`
-  явно, а не по переменной окружения — чтобы поведение не зависело от настроек машины.
-- **Рекурсивный контракт получает JSON Schema, но не получает d42.** d42 строит схему «по
-  значению», и рекурсия развернулась бы бесконечно. `update` печатает об этом строкой
-  `контракт рекурсивен, d42-схемы не генерируются (JSON Schema и валидация работают)`,
-  а `OperationHandle.d42_schema()` для такой операции поднимает `OperationLookupError`.
-- **`update` и `check` требуют extra `[d42]`, если для операций включены d42-артефакты.**
-  Выключить их можно точечно ключом `d42: false` у операции в manifest либо флагом
-  `--no-d42` у `geas add`.
-- **Параметры — только скаляры и массивы скаляров.** Объекты в параметрах и вложенные
-  массивы не сериализуются однозначно и отклоняются.
-- **Тело — только JSON-совместимые media type** (`application/json` и `*/+json`; в Swagger
-  2.0 дополнительно `*/*`). Остальные варианты помечаются как непредставимые, не попадают
-  в контракт, но саму операцию не роняют.
-
----
+- [docs/cli.md](docs/cli.md) — команды, флаги, коды возврата, типовые сценарии
+- [docs/waivers.md](docs/waivers.md) — waiver'ы, `non_waivable`, политики
+- [docs/migration.md](docs/migration.md) — подключение к проекту с существующими моками
+- [docs/support-matrix.md](docs/support-matrix.md) — матрица поддержки OpenAPI 3.0 / Swagger 2.0
+- [examples/consumer](examples/consumer) — рабочий пример проекта-потребителя
+- [CHANGELOG.md](CHANGELOG.md) — история изменений
 
 ## Разработка
 
@@ -944,15 +481,22 @@ async with operations.ws2.add_ticket.mock(response=body, wait_for_requests=1) as
 make install     # venv + editable-установка с dev-зависимостями
 make lint        # ruff check + ruff format --check
 make typecheck   # mypy strict
-make test        # pytest (сеть не требуется и запрещена)
+make test        # pytest
 make check       # всё сразу
 ```
 
-## Документация
+Устройство пакета:
 
-- [docs/cli.md](docs/cli.md) — команды, флаги, коды возврата
-- [docs/waivers.md](docs/waivers.md) — формат waiver'ов, жизненный цикл, разобранный пример
-- [docs/support-matrix.md](docs/support-matrix.md) — матрица поддержки OpenAPI 3.0 / Swagger 2.0
-- [docs/migration.md](docs/migration.md) — миграция существующего E2E-проекта
-- [docs/adr/0001-architecture.md](docs/adr/0001-architecture.md) — архитектурные решения
-- [CHANGELOG.md](CHANGELOG.md) — история изменений
+```
+geas/                  ядро: manifest, нормализация, JSON Schema, артефакты, CLI
+geas/dialects/         адаптеры Swagger 2.0 и OpenAPI 3.0
+geas/integrations/d42/ d42-схемы, overlay'и, фикстуры (extra [d42])
+geas/integrations/jj/  моки (extra [jj])
+```
+
+Ядро не импортирует `d42` и `jj`: тесты проверяют это в подпроцессе, где оба модуля
+заблокированы. Тесты не ходят в сеть — фикстура `no_outbound_network` разрешает только
+loopback для локального сервера моков. Синтетические спецификации для тестов лежат в
+`tests/fixtures/specs/`.
+
+Архитектурные решения и их обоснования — [docs/adr/](docs/adr/).

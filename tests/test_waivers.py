@@ -276,6 +276,66 @@ def test_waiver_narrowed_to_another_variant_does_not_apply(tmp_path: Path) -> No
         project.build()
 
 
+@pytest.mark.parametrize(
+    "narrowing",
+    [
+        {"status": 200},
+        {"content_type": "application/json"},
+        {"status": 200, "content_type": "application/json"},
+    ],
+    ids=["status", "content-type", "both"],
+)
+def test_request_waiver_cannot_be_narrowed_to_a_response_variant(
+    tmp_path: Path, narrowing: dict[str, Any]
+) -> None:
+    """У запроса нет вариантов ответа: сужение отвергается при загрузке файла.
+
+    Иначе такой waiver не сработал бы ни в одной точке, и генерация сообщила бы
+    только, что он «больше не нужен», — ни слова о настоящей причине.
+    """
+    project = no_type_project(tmp_path / "project")
+    project.write_waivers([waiver(direction="request", **narrowing)])
+
+    with pytest.raises(WaiverError) as info:
+        project.waivers()
+
+    message = str(info.value)
+    assert "waivers[0]" in message, message
+    assert "direction: response" in message, message
+
+
+def test_response_header_waiver_cannot_be_narrowed_by_content_type(tmp_path: Path) -> None:
+    """У заголовка ответа нет content type — сужать по нему нечего."""
+    project = no_type_project(tmp_path / "project")
+    project.write_waivers(
+        [
+            waiver(
+                json_pointer="/param/header/X-Request-Id",
+                rule="relax_required",
+                status=200,
+                content_type="application/json",
+            )
+        ]
+    )
+
+    with pytest.raises(WaiverError) as info:
+        project.waivers()
+
+    message = str(info.value)
+    assert "content_type" in message, message
+    assert "/param/header/X-Request-Id" in message, message
+
+
+def test_response_header_waiver_can_be_narrowed_by_status(tmp_path: Path) -> None:
+    """Статус заголовок ответа сужает: заголовки объявлены у каждого варианта отдельно."""
+    project = no_type_project(tmp_path / "project")
+    project.write_waivers(
+        [waiver(json_pointer="/param/header/X-Request-Id", rule="relax_required", status=200)]
+    )
+
+    assert len(project.waivers().waivers) == 1
+
+
 # ------------------------------------------------------------------- сроки
 
 
@@ -674,11 +734,16 @@ def test_non_waivable_direction_must_exist(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("pointer", ["/body/rc", "/body", "/"])
-def test_waiver_overlapping_non_waivable(tmp_path: Path, pointer: str) -> None:
-    """Пересечение считается по префиксу: waiver выше по дереву тоже запрещён."""
+@pytest.mark.parametrize("protected", ["/body/rc", "/rc"], ids=["full", "short"])
+def test_waiver_overlapping_non_waivable(tmp_path: Path, pointer: str, protected: str) -> None:
+    """Пересечение считается по префиксу: waiver выше по дереву тоже запрещён.
+
+    Путь ``non_waivable`` принимается и полностью (``/body/rc``), и коротко
+    (``/rc``) — это одна и та же точка, и защищать её обязаны одинаково.
+    """
     project = clean_project(
         tmp_path / "project",
-        [{"direction": "response", "json_pointer": "/body/rc", "rules": ["present"]}],
+        [{"direction": "response", "json_pointer": protected, "rules": ["present"]}],
     )
     project.write_waivers(
         [waiver(operation="api.getCard", json_pointer=pointer, expected_source="0" * 64)]
@@ -687,14 +752,15 @@ def test_waiver_overlapping_non_waivable(tmp_path: Path, pointer: str) -> None:
     with pytest.raises(WaiverError) as info:
         project.waivers().validate(project.load(), today=today())
 
-    assert "пересекается с non_waivable" in str(info.value)
+    assert "пересекается с non_waivable /body/rc" in str(info.value)
 
 
-def test_waiver_beside_non_waivable_is_allowed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("protected", ["/body/rc", "/rc"], ids=["full", "short"])
+def test_waiver_beside_non_waivable_is_allowed(tmp_path: Path, protected: str) -> None:
     """Соседняя ветка контракта под non_waivable не попадает."""
     project = clean_project(
         tmp_path / "project",
-        [{"direction": "response", "json_pointer": "/body/rc", "rules": ["present"]}],
+        [{"direction": "response", "json_pointer": protected, "rules": ["present"]}],
     )
     project.write_waivers(
         [
@@ -973,6 +1039,139 @@ def test_direction_waiver_becomes_unused_after_source_is_fixed(tmp_path: Path) -
         ]
     )
     project.write_spec("api/openapi.yaml", DEFECTIVE_REQUEST.replace(", readOnly: true", ""))
+
+    with pytest.raises(WaiverError, match="больше не нужны"):
+        project.build()
+
+
+# ------------------------------------------ ошибочно обязательные параметры
+
+REQUIRED_QUERY = """swagger: "2.0"
+info: {title: Required query, version: "1.0.0"}
+basePath: /api
+paths:
+  /tickets/{ticketId}/articles:
+    post:
+      operationId: addArticle
+      consumes: [application/json]
+      produces: [application/json]
+      parameters:
+        - {in: path, name: ticketId, required: true, type: integer}
+        - {in: query, name: skipDuplicatesCheck, required: true, type: boolean}
+        - {in: query, name: patternId, required: false, type: integer}
+      responses:
+        "200":
+          description: ok
+          schema: {type: string}
+"""
+
+#: Отпечаток схемы boolean-параметра: у Swagger 2 она собирается из полей параметра.
+BOOLEAN_PARAMETER_DIGEST = semantic_source_digest({"type": "boolean"})
+
+
+def required_query_project(root: Path, source: str = REQUIRED_QUERY) -> Project:
+    """Swagger-проект, где query-параметр ошибочно объявлен обязательным."""
+    return build_project(
+        root,
+        source=source,
+        operations={"ws.addArticle": {"source": "main", "operation_id": "addArticle"}},
+    )
+
+
+def parameter_waiver(pointer: str, expected: str = BOOLEAN_PARAMETER_DIGEST) -> dict[str, Any]:
+    """Waiver, снимающий ``required`` с параметра запроса."""
+    return {
+        "operation": "ws.addArticle",
+        "direction": "request",
+        "json_pointer": pointer,
+        "rule": "relax_required",
+        "reason": "клиент не передаёт параметр, а спецификация объявляет его обязательным",
+        "owner": "team-api",
+        "issue": "BUG-43",
+        "expires_at": in_days(30),
+        "expected_source": expected,
+    }
+
+
+def recorded_add_article(params: list[tuple[str, str]]) -> dict[str, Any]:
+    """Перехваченный запрос к ``ws.addArticle`` с заданными query-параметрами."""
+    return {
+        "method": "POST",
+        "path": "/api/tickets/42/articles",
+        "segments": {"ticketId": "42"},
+        "params": params,
+        "headers": [],
+        "body": None,
+        "index": 0,
+    }
+
+
+def request_parameters(project: Project) -> dict[str, bool]:
+    """Обязательность параметров запроса из собранного контракта."""
+    document = project.build().by_key("ws.addArticle").document
+    return {item["name"]: item["required"] for item in document["request"]["parameters"]}
+
+
+def test_relax_required_makes_query_parameter_optional(tmp_path: Path) -> None:
+    """Waiver на /param/query/<name> снимает required только с этого параметра."""
+    project = required_query_project(tmp_path / "project")
+    project.write_waivers([parameter_waiver("/param/query/skipDuplicatesCheck")])
+
+    assert request_parameters(project) == {
+        "ticketId": True,
+        "skipDuplicatesCheck": False,
+        "patternId": False,
+    }
+
+
+def test_relaxed_query_parameter_may_be_absent_in_recorded_request(tmp_path: Path) -> None:
+    """Перехваченный запрос без ослабленного параметра проходит проверку контракта."""
+    project = required_query_project(tmp_path / "project")
+    project.write_waivers([parameter_waiver("/param/query/skipDuplicatesCheck")])
+    project.update()
+
+    with project.importable() as module:
+        operation = module.operations.ws.add_article
+        operation.validate_recorded_request(**recorded_add_article([]))
+        operation.validate_recorded_request(
+            **recorded_add_article([("skipDuplicatesCheck", "true")])
+        )
+
+
+def test_required_query_parameter_without_waiver_is_still_enforced(tmp_path: Path) -> None:
+    """Без waiver'а обязательный параметр по-прежнему проверяется."""
+    project = required_query_project(tmp_path / "project")
+    project.update()
+
+    with project.importable() as module, pytest.raises(ContractError, match="skipDuplicatesCheck"):
+        module.operations.ws.add_article.validate_recorded_request(**recorded_add_article([]))
+
+
+def test_parameter_waiver_becomes_unused_after_source_is_fixed(tmp_path: Path) -> None:
+    """Когда спецификация перестаёт требовать параметр, waiver обязан сломать генерацию."""
+    project = required_query_project(
+        tmp_path / "project",
+        source=REQUIRED_QUERY.replace(
+            "name: skipDuplicatesCheck, required: true",
+            "name: skipDuplicatesCheck, required: false",
+        ),
+    )
+    project.write_waivers([parameter_waiver("/param/query/skipDuplicatesCheck")])
+
+    with pytest.raises(WaiverError, match="больше не нужны"):
+        project.build()
+
+
+def test_path_parameter_is_never_relaxed(tmp_path: Path) -> None:
+    """Без path-параметра нет маршрута: такой waiver остаётся неиспользованным."""
+    project = required_query_project(tmp_path / "project")
+    project.write_waivers(
+        [
+            parameter_waiver(
+                "/param/path/ticketId", expected=semantic_source_digest({"type": "integer"})
+            )
+        ]
+    )
 
     with pytest.raises(WaiverError, match="больше не нужны"):
         project.build()

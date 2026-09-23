@@ -728,9 +728,15 @@ class OperationHandle:
     ) -> Any:
         """Вернуть generated d42-схему направления.
 
+        ``export`` — имя generated-переменной (``view.d42_export``). Если в
+        направлении ровно одна d42-схема, его можно не передавать; если их
+        несколько, выбор обязателен — молча брать первую нельзя.
+
         Требует extra ``[d42]``. Если для операции d42 не генерировался
         (например из-за рекурсии в контракте), поднимается понятная ошибка.
         """
+        if export is None:
+            export = self._only_d42_export(direction)
         module_name = self._d42_module_name(direction)
         if module_name is None or export is None:
             reason = self._d42_reason or (
@@ -750,6 +756,21 @@ class OperationHandle:
                 f"командой 'geas update'",
                 operation_key=self._key,
             ) from exc
+
+    def _only_d42_export(self, direction: Direction) -> str | None:
+        """Имя единственной d42-схемы направления или ``None``, если схем нет."""
+        variants: Sequence[RequestBodyView | ResponseView] = (
+            self._request.bodies if direction is Direction.REQUEST else self._responses
+        )
+        exports = sorted({item.d42_export for item in variants if item.d42_export is not None})
+        if len(exports) > 1:
+            raise OperationLookupError(
+                f"у операции {self._key!r} несколько d42-схем направления "
+                f"{direction.value} ({exports}); передайте export явно, например "
+                f"export=operation.response(status=200).d42_export",
+                operation_key=self._key,
+            )
+        return exports[0] if exports else None
 
     def _validate_with_d42(self, value: Any, *, export: str | None, direction: Direction) -> None:
         """Дополнительная проверка по generated d42, если extra установлен."""

@@ -67,6 +67,8 @@ def test_openapi31_is_rejected_with_a_precise_diagnostic() -> None:
     assert "nullable" in message
     assert "exclusiveMinimum" in message
     assert "openapi31.py" in message
+    # Номер версии библиотеки в тексте устаревает с первым же релизом.
+    assert "в версии" not in message, message
 
 
 def test_openapi31_is_rejected_through_the_whole_pipeline(tmp_path: Path) -> None:
