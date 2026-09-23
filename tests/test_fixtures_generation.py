@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from d42 import optional, schema, validate_or_fail
 
-from geas.errors import ContractOverlayError
+from geas.errors import ContractOverlayError, OperationLookupError
 from geas.integrations.d42 import build_fixture, overlay_generators
 from geas.integrations.d42.fixtures import (
     project_first_variant,
@@ -221,6 +221,73 @@ def test_generated_fixture_is_byte_stable_between_runs(tmp_path: Path) -> None:
         d42_schema = handle.d42_schema(Direction.RESPONSE, export=variant.d42_export)
 
         assert build_fixture(d42_schema, seed=1) == build_fixture(d42_schema, seed=1)
+
+
+#: Та же спецификация, но у ответа два варианта с разными generated-схемами.
+_TWO_RESPONSE_SCHEMAS_SPEC = _D42_FRIENDLY_SPEC.replace(
+    """components:
+  schemas:
+""",
+    """        "400":
+          description: ошибка
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Problem'}
+components:
+  schemas:
+    Problem:
+      type: object
+      required: [code]
+      properties:
+        code: {type: string, enum: [invalid, forbidden]}
+""",
+)
+
+
+def test_d42_schema_without_export_returns_the_only_schema(tmp_path: Path) -> None:
+    """Единственную d42-схему направления можно получить без ``export``.
+
+    Так же ведут себя ``response()`` и ``request.body()``: единственный вариант
+    выбирается сам, и угадывать имя generated-переменной не нужно.
+    """
+    project = _fixtures_project(tmp_path / "project")
+    project.update()
+
+    with project.importable() as generated_package:
+        handle = generated_package.operations.api.list_items
+        export = handle.response(status=200).d42_export
+
+        assert handle.d42_schema(Direction.RESPONSE) is handle.d42_schema(
+            Direction.RESPONSE, export=export
+        )
+
+
+def test_d42_schema_without_export_names_the_choices(tmp_path: Path) -> None:
+    """Несколько схем в направлении — ошибка просит ``export`` и перечисляет варианты.
+
+    Сообщение «d42-схемы не сгенерированы» здесь было бы ложью: они есть, просто
+    выбор неоднозначен.
+    """
+    project = make_project(tmp_path / "project")
+    project.write("api/spec.yaml", _TWO_RESPONSE_SCHEMAS_SPEC)
+    project.write_manifest(
+        sources={"main": {"path": "api/spec.yaml", "selection": "explicit"}},
+        operations={"api.listItems": {"source": "main", "operation_id": "listItems"}},
+    )
+    project.update()
+
+    with project.importable() as generated_package:
+        handle = generated_package.operations.api.list_items
+        exports = sorted(str(variant.d42_export) for variant in handle.responses)
+        assert len(exports) == 2
+
+        with pytest.raises(OperationLookupError) as info:
+            handle.d42_schema(Direction.RESPONSE)
+
+    message = str(info.value)
+    assert "export" in message, message
+    assert all(name in message for name in exports), message
+    assert "не сгенерированы" not in message, message
 
 
 def test_d42_is_disabled_with_a_reason_when_it_cannot_express_the_contract(

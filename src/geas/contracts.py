@@ -58,6 +58,7 @@ from .normalization.schemas import SchemaNormalizer
 from .paths import (
     ADDITIONAL_PROPERTIES,
     ARRAY_ITEMS,
+    BODY_ROOT,
     ContractPath,
     format_contract_path,
     is_variant_segment,
@@ -72,9 +73,6 @@ __all__ = [
     "build_contracts",
     "resolve_contract_path",
 ]
-
-#: Корень contract path для тела.
-BODY_ROOT: ContractPath = ("body",)
 
 
 def _param_root(location: ParameterLocation, name: str) -> ContractPath:
@@ -187,18 +185,13 @@ def _select_explicit(
                     operation_key=spec.key,
                 )
             if len(candidates) > 1:
-                routes = sorted(f"{c.method} {c.path}" for c in candidates)
-                raise ManifestBindingError(
-                    f"operationId={spec.operation_id!r} встречается несколько раз ({routes}); "
-                    f"уточните method и path в manifest",
-                    source=source_name,
-                    operation_key=spec.key,
-                )
-            raw = candidates[0]
-            if spec.method and spec.path:
-                exact = by_route.get((spec.method, spec.path))
-                if exact is not None:
-                    raw = exact
+                raw = _pick_by_route(spec, candidates, source_name)
+            else:
+                raw = candidates[0]
+                if spec.method and spec.path:
+                    exact = by_route.get((spec.method, spec.path))
+                    if exact is not None:
+                        raw = exact
         elif spec.method and spec.path:
             found = by_route.get((spec.method, spec.path))
             if found is None:
@@ -216,6 +209,34 @@ def _select_explicit(
         _check_binding(spec, raw, source_name)
         selected.append((spec.key, spec, raw))
     return selected
+
+
+def _pick_by_route(
+    spec: OperationSpec, candidates: list[RawOperation], source_name: str
+) -> RawOperation:
+    """Выбрать одну из операций с общим ``operationId`` по закреплённому маршруту.
+
+    Генераторы спецификаций регулярно выпускают один ``operationId`` на нескольких
+    ручках. Какая из них нужна, говорит только пара method + path из manifest;
+    без неё выбор был бы произвольным, поэтому это ошибка, а не первая попавшаяся.
+    """
+    routes = sorted(f"{c.method} {c.path}" for c in candidates)
+    if not (spec.method and spec.path):
+        raise ManifestBindingError(
+            f"operationId={spec.operation_id!r} встречается несколько раз ({routes}); "
+            f"уточните method и path в manifest",
+            source=source_name,
+            operation_key=spec.key,
+        )
+    for candidate in candidates:
+        if (candidate.method, candidate.path) == (spec.method, spec.path):
+            return candidate
+    raise ManifestBindingError(
+        f"operationId={spec.operation_id!r} встречается несколько раз ({routes}), "
+        f"и среди этих операций нет {spec.method} {spec.path}, закреплённой в manifest",
+        source=source_name,
+        operation_key=spec.key,
+    )
 
 
 def _select_all(

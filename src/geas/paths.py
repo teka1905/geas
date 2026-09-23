@@ -36,7 +36,9 @@ from .errors import ContractError
 __all__ = [
     "ADDITIONAL_PROPERTIES",
     "ARRAY_ITEMS",
+    "BODY_ROOT",
     "ContractPath",
+    "body_path",
     "escape_property",
     "format_contract_path",
     "is_variant_segment",
@@ -54,6 +56,21 @@ _VARIANT = re.compile(r"^#(\d+)$")
 
 #: Contract path — кортеж сегментов. Пустой кортеж означает корень контракта.
 ContractPath = tuple[str, ...]
+
+#: Корень contract path для тела запроса или ответа.
+BODY_ROOT: ContractPath = ("body",)
+
+
+def body_path(path: ContractPath) -> ContractPath:
+    """Путь внутри тела, отсчитанный от :data:`BODY_ROOT`.
+
+    ``non_waivable`` адресует только тело и принимает путь в двух формах:
+    полной (``/body/rc``) и короткой (``/rc``). Сравнивать его с путями waiver'ов,
+    которые всегда начинаются с корня направления, можно только в полной форме.
+    """
+    if path[: len(BODY_ROOT)] == BODY_ROOT:
+        return path
+    return (*BODY_ROOT, *path)
 
 
 def variant_segment(index: int) -> str:

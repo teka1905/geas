@@ -39,7 +39,7 @@ from .errors import ContractError, WaiverError
 from .fingerprints import ANNOTATION_KEYS, digest, semantic_source_digest, strip_annotations
 from .manifest import Manifest, NonWaivableAssertion
 from .models import Direction
-from .paths import ContractPath, format_contract_path, parse_contract_path
+from .paths import ContractPath, body_path, format_contract_path, parse_contract_path
 
 __all__ = [
     "SUBTREE_RULES",
@@ -113,6 +113,9 @@ SUBTREE_RULES = frozenset(
 _EXCLUSIVE_RULES = frozenset(
     {WaiverRule.ALLOW_ANY, WaiverRule.REPLACE_SCHEMA, WaiverRule.ADD_PROPERTY}
 )
+
+#: Корень contract path параметров и заголовков: ``/param/<in>/<name>``.
+_PARAM_ROOT: ContractPath = ("param",)
 
 
 def waiver_source_digest(fragment: Any, rule: WaiverRule | str) -> str:
@@ -332,6 +335,21 @@ class Waiver:
             # получил бы ContractError без имени файла и индекса записи.
             raise WaiverError(f"{where}.json_pointer: {exc}") from exc
 
+        # Поле сужения, которому не с чем совпасть, сделало бы waiver мёртвым: он
+        # не сработал бы ни в одной точке, и генерация сообщила бы только, что он
+        # «больше не нужен». Такое отвергается сразу, с настоящей причиной.
+        if direction is Direction.REQUEST and (status is not None or content_type is not None):
+            raise WaiverError(
+                f"{where}: поля 'status' и 'content_type' сужают waiver до варианта ответа "
+                f"и допустимы только при direction: response. Уберите их: waiver на "
+                f"запрос действует на все тела запроса операции"
+            )
+        if content_type is not None and path[: len(_PARAM_ROOT)] == _PARAM_ROOT:
+            raise WaiverError(
+                f"{where}: у заголовка ответа {data['json_pointer']} нет content type, "
+                f"поэтому 'content_type' его не сужает. Оставьте только 'status'"
+            )
+
         return cls(
             operation=data["operation"],
             direction=direction,
@@ -488,12 +506,15 @@ class WaiverSet:
     def _check_non_waivable(self, manifest: Manifest) -> None:
         for spec in manifest.operations:
             for assertion in spec.non_waivable:
+                # Пути waiver'ов всегда начинаются с корня тела, а non_waivable
+                # допускает и короткую форму: сравнивать можно только полную.
+                protected_path = body_path(assertion.path)
                 for waiver in self.waivers:
                     if waiver.operation != spec.key or waiver.direction != assertion.direction:
                         continue
-                    if not _paths_overlap(waiver.path, assertion.path):
+                    if not _paths_overlap(waiver.path, protected_path):
                         continue
-                    protected = format_contract_path(assertion.path)
+                    protected = format_contract_path(protected_path)
                     detail = ""
                     if waiver.scope is WaiverScope.SUBTREE:
                         # Покрывающий waiver стоит выше защищённой точки, и по

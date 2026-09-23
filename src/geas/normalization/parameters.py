@@ -156,15 +156,50 @@ def normalize_parameter(
     if raw.location is ParameterLocation.PATH and not raw.required:
         raise rejected(f"path-параметр {raw.name!r} обязан быть required: true")
 
+    # Path-параметр без значения не даёт маршрута, поэтому его обязательность не
+    # ослабляется: waiver на него так и останется неиспользованным.
+    required = raw.required
+    if (
+        required
+        and raw.location is not ParameterLocation.PATH
+        and _required_relaxed(raw, normalizer, root, status)
+    ):
+        required = False
+
     return ParameterContract(
         name=raw.name,
         location=raw.location,
-        required=raw.required,
+        required=required,
         schema=schema,
         style=raw.style,
         explode=raw.explode,
         origin=raw.origin,
     )
+
+
+def _required_relaxed(
+    raw: RawParameter,
+    normalizer: SchemaNormalizer,
+    root: ContractPath,
+    status: int | str | None,
+) -> bool:
+    """Снят ли с параметра ошибочный ``required: true`` явным waiver'ом.
+
+    Waiver спрашивается только у обязательного параметра: когда спецификацию
+    исправят, точка перестанет его спрашивать, и генерация сообщит, что
+    послабление больше не нужно.
+    """
+    from ..fingerprints import semantic_source_digest
+
+    waiver = normalizer.waivers.consult(
+        operation=normalizer.operation_key,
+        direction=normalizer.direction,
+        path=root,
+        rule=WaiverRule.RELAX_REQUIRED,
+        source_digest=semantic_source_digest(raw.schema),
+        status=status,
+    )
+    return waiver is not None
 
 
 def _serialization_waived(

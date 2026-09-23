@@ -15,6 +15,7 @@
 сузили тип / enum / pattern / границы   прежде валидные значение или override падают
 добавили вариант enum или union         контракт растёт, фикстура не меняет ветку
 поменяли метод / маршрут / статус / CT  ``ManifestBindingError``
+operationId повторили на другой ручке   по method + path связывается, иначе ошибка
 поменяли только описания и порядок      артефакты байт-в-байт те же, ``check`` чист
 ======================================  ==================================================
 
@@ -174,18 +175,22 @@ def document_create(spec: dict[str, Any]) -> dict[str, Any]:
 # --------------------------------------------------------------------------------------
 
 
-def build_project(root: Path, spec: dict[str, Any] | str) -> Project:
-    """Собрать проект-потребитель с единственной операцией."""
+def build_project(root: Path, spec: dict[str, Any] | str, *, route: str | None = ROUTE) -> Project:
+    """Собрать проект-потребитель с единственной операцией.
+
+    ``route`` — маршрут, закреплённый в manifest вместе с методом; ``None`` —
+    операция привязана только по ``operationId``.
+    """
     project = make_project(root)
     write_spec(project, spec)
+    binding: dict[str, Any] = {"source": "main", "operation_id": "createDocument"}
+    if route is not None:
+        binding.update(method="POST", path=route)
     project.write_manifest(
         sources={"main": {"path": "api/openapi.yaml", "selection": "explicit"}},
         operations={
             OPERATION_KEY: {
-                "source": "main",
-                "operation_id": "createDocument",
-                "method": "POST",
-                "path": ROUTE,
+                **binding,
                 "request": {"content_type": "application/json"},
                 "responses": [{"status": 200, "content_type": "application/json"}],
                 "python_path": ["api", "create_document"],
@@ -588,7 +593,79 @@ def test_binding_change_is_reported(
 
 
 # --------------------------------------------------------------------------------------
-# Строка 8: чистая косметика
+# Строка 8: operationId повторили на другой ручке
+# --------------------------------------------------------------------------------------
+
+#: Второй маршрут, на который генератор спецификации скопировал ``operationId``.
+DUPLICATE_ROUTE = "/api/v1/workspaces/{workspaceId}/drafts"
+
+
+def duplicate_operation_id(spec: dict[str, Any]) -> None:
+    """Та же операция появилась на втором маршруте с тем же ``operationId``."""
+    spec["paths"][DUPLICATE_ROUTE] = copy.deepcopy(spec["paths"][ROUTE])
+
+
+def test_duplicate_operation_id_keeps_route_pinned_binding(tmp_path: Path) -> None:
+    """Дубль ``operationId`` на чужой ручке не ломает операцию, закреплённую маршрутом.
+
+    Генераторы спецификаций регулярно выпускают один ``operationId`` на двух
+    ручках. Manifest уже говорит, какая из них нужна, поэтому артефакты обязаны
+    остаться прежними.
+    """
+    project = build_project(tmp_path / "project", base_spec())
+    project.update()
+
+    spec = base_spec()
+    duplicate_operation_id(spec)
+    write_spec(project, spec)
+
+    assert project.build().by_key(OPERATION_KEY).contract.path == ROUTE
+    assert project.check().is_clean
+
+
+@pytest.mark.parametrize("route", [ROUTE, DUPLICATE_ROUTE], ids=["first", "second"])
+def test_duplicate_operation_id_binds_the_route_from_manifest(tmp_path: Path, route: str) -> None:
+    """Из двух ручек с одним ``operationId`` выбирается та, что закреплена в manifest."""
+    spec = base_spec()
+    duplicate_operation_id(spec)
+    project = build_project(tmp_path / "project", spec, route=route)
+
+    assert project.build().by_key(OPERATION_KEY).contract.path == route
+
+
+def test_duplicate_operation_id_without_route_is_ambiguous(tmp_path: Path) -> None:
+    """Без method + path выбрать не из чего: ошибка называет оба маршрута."""
+    spec = base_spec()
+    duplicate_operation_id(spec)
+    project = build_project(tmp_path / "project", spec, route=None)
+
+    with pytest.raises(ManifestBindingError) as error:
+        project.build()
+    message = str(error.value)
+    assert "встречается несколько раз" in message, message
+    assert f"POST {ROUTE}" in message and f"POST {DUPLICATE_ROUTE}" in message, message
+    assert "method и path" in message, message
+
+
+def test_duplicate_operation_id_with_stale_route_is_reported(tmp_path: Path) -> None:
+    """Закреплённого маршрута нет среди дублей — ошибка называет и его, и кандидатов."""
+    project = build_project(tmp_path / "project", base_spec())
+
+    spec = base_spec()
+    duplicate_operation_id(spec)
+    change_path(spec)
+    write_spec(project, spec)
+
+    with pytest.raises(ManifestBindingError) as error:
+        project.build()
+    message = str(error.value)
+    assert OPERATION_KEY in message, message
+    assert f"POST {ROUTE}" in message, message
+    assert f"POST {DUPLICATE_ROUTE}" in message, message
+
+
+# --------------------------------------------------------------------------------------
+# Строка 9: чистая косметика
 # --------------------------------------------------------------------------------------
 
 

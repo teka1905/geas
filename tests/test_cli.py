@@ -409,6 +409,120 @@ def test_add_writes_python_path_response_and_d42_flag(tmp_path: Path) -> None:
     assert not (project.output_dir / "_d42").exists()
 
 
+def naming_project(
+    root: Path, fixture: str, operations: Mapping[str, Any] | None = None
+) -> Project:
+    """Проект на спецификации из ``naming/``: дубль ``operationId`` или его отсутствие."""
+    project = make_project(root)
+    project.write_spec("api/openapi.yaml", spec("naming", fixture))
+    project.write_manifest(
+        sources={"main": {"path": "api/openapi.yaml", "selection": "explicit"}},
+        operations=operations,
+    )
+    return project
+
+
+def test_add_asks_for_route_when_operation_id_is_duplicated(tmp_path: Path) -> None:
+    """Один ``operationId`` на двух ручках — ошибка использования с подсказкой."""
+    project = naming_project(tmp_path / "workspace", "duplicate_operation_id.yaml")
+    before = project.manifest_bytes()
+
+    result = project.cli(
+        "add", "archive.listDocuments", "--source", "main", "--operation-id", "listDocuments"
+    )
+
+    assert result.returncode == 2, result.stderr
+    assert "--method и --path" in result.stderr
+    assert project.manifest_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "selector",
+    [
+        ("--operation-id", "listDocuments", "--method", "GET", "--path", "/archive/documents"),
+        ("--method", "GET", "--path", "/archive/documents"),
+    ],
+    ids=["operation-id-and-route", "route-only"],
+)
+def test_add_binds_duplicated_operation_id_by_route(
+    tmp_path: Path, selector: tuple[str, ...]
+) -> None:
+    """Подсказка ``add`` рабочая: с ``--method`` и ``--path`` дубль разрешается."""
+    project = naming_project(tmp_path / "workspace", "duplicate_operation_id.yaml")
+
+    result = project.cli("add", "archive.listDocuments", "--source", "main", *selector)
+
+    assert result.returncode == 0, result.stderr
+    entry = yaml.safe_load(project.manifest_path.read_text(encoding="utf-8"))["operations"][
+        "archive.listDocuments"
+    ]
+    assert entry["operation_id"] == "listDocuments"
+    assert (entry["method"], entry["path"]) == ("GET", "/archive/documents")
+
+    update = project.cli("update")
+    assert update.returncode == 0, update.stderr
+    assert project.contract_document("archive__list_documents")["path"] == "/archive/documents"
+
+
+def test_add_binds_operation_without_operation_id_by_route(tmp_path: Path) -> None:
+    """Операцию без ``operationId`` добавляют по ``--method`` и ``--path``."""
+    project = naming_project(tmp_path / "workspace", "missing_operation_id.yaml")
+
+    result = project.cli(
+        "add", "docs.listDocuments", "--source", "main", "--method", "GET", "--path", "/documents"
+    )
+
+    assert result.returncode == 0, result.stderr
+    entry = yaml.safe_load(project.manifest_path.read_text(encoding="utf-8"))["operations"][
+        "docs.listDocuments"
+    ]
+    assert "operation_id" not in entry
+    assert (entry["method"], entry["path"]) == ("GET", "/documents")
+    assert project.cli("update").returncode == 0
+
+
+def test_list_marks_only_the_bound_route_of_duplicated_operation_id(tmp_path: Path) -> None:
+    """Звёздочка стоит на ручке из manifest, а не на всех ручках с тем же ``operationId``."""
+    project = naming_project(
+        tmp_path / "workspace",
+        "duplicate_operation_id.yaml",
+        {
+            "archive.listDocuments": {
+                "source": "main",
+                "operation_id": "listDocuments",
+                "method": "GET",
+                "path": "/archive/documents",
+            }
+        },
+    )
+
+    result = project.cli("list", "--json")
+
+    assert result.returncode == 0, result.stderr
+    operations = json.loads(result.stdout)["sources"][0]["operations"]
+    assert {item["path"]: (item["key"], item["selected"]) for item in operations} == {
+        "/archive/documents": ("archive.listDocuments", True),
+        "/documents": (None, False),
+    }
+
+
+def test_list_marks_operation_bound_by_route(tmp_path: Path) -> None:
+    """Операция без ``operationId``, привязанная по method + path, тоже отмечена."""
+    project = naming_project(
+        tmp_path / "workspace",
+        "missing_operation_id.yaml",
+        {"docs.listDocuments": {"source": "main", "method": "GET", "path": "/documents"}},
+    )
+
+    result = project.cli("list", "--json")
+
+    assert result.returncode == 0, result.stderr
+    operations = json.loads(result.stdout)["sources"][0]["operations"]
+    assert [(item["path"], item["key"], item["selected"]) for item in operations] == [
+        ("/documents", "docs.listDocuments", True)
+    ]
+
+
 def test_add_rejects_non_numeric_response_status(tmp_path: Path) -> None:
     """Нечисловой статус в ``--response`` — ошибка использования, а не traceback."""
     project = demo_project(tmp_path / "workspace", {"api.listDocuments": _LIST})
