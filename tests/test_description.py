@@ -529,7 +529,7 @@ def build_project(root: Path, *, package: str) -> Project:
     ``content.replaceContent`` — два тела запроса и d42 в обоих направлениях;
     ``api.deleteDocument`` — вариант без тела рядом с вариантом с d42;
     ``health.getHealth`` — единственный вариант со статусом ``default``;
-    ``tree.getTree`` — рекурсивный контракт, для которого d42 не генерируется.
+    ``tree.getTree`` — рекурсивный контракт: d42 генерируется с отсечкой цикла.
     """
     project = make_project(root, package=package)
     project.write_spec("api/openapi.yaml", spec("basic", "openapi30.yaml"))
@@ -638,16 +638,17 @@ def test_variant_without_its_own_d42_schema_has_no_d42_coordinates(operations: A
     assert empty.d42_source_path is None
 
 
-def test_recursive_contract_has_json_schema_but_no_d42(operations: Any) -> None:
-    """Рекурсивный контракт описывается по JSON Schema; d42 честно назван отсутствующим."""
+def test_recursive_contract_has_json_schema_and_d42(operations: Any) -> None:
+    """Рекурсивный контракт описывается по JSON Schema, и у него есть d42-схема с отсечкой."""
     view = operations.tree.get_tree.response(status=200)
 
     assert view.contract_file.exists()
-    assert view.d42_module is None
-    assert view.d42_reference is None
+    assert view.d42_reference == f"{view.d42_module}:GeneratedNodeSchema"
+    assert view.d42_source_path is not None
+    assert view.d42_source_path.exists()
     text = view.describe()
     assert "$ref #/$defs/Node (рекурсия)" in text
-    assert "d42:\n  схемы не сгенерированы" in text
+    assert "схемы не сгенерированы" not in text
 
 
 def test_directly_built_views_have_no_coordinates() -> None:

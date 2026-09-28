@@ -38,6 +38,10 @@
    ручной схемы обязан совпасть с типом сгенерированного листа; если лист — это
    union литералов (``enum``), ручной генератор обязан быть его подмножеством.
    Несовпадение типа или значение вне ``enum`` — ошибка сразу, при сборке overlay'я.
+6. **Узел, на котором отсечён цикл, overlay не пересекает.** За ним — рекурсивная
+   часть контракта, которую d42 не разворачивает (см.
+   :mod:`~geas.integrations.d42.recursion`); путь до такого узла или сквозь него —
+   :class:`~geas.errors.ContractOverlayError` с подсказкой задать значение через ``%``.
 
 Что нельзя проверить заранее
 ----------------------------
@@ -79,6 +83,8 @@ from niltype import Nil
 
 from geas.errors import ContractOverlayError
 from geas.paths import ARRAY_ITEMS, format_contract_path
+
+from .recursion import RecursiveRefSchema
 
 __all__ = [
     "EACH",
@@ -180,6 +186,13 @@ def _apply(
                 f"overlay {where}: нельзя спускаться внутрь union — сгенерированный "
                 f"узел допускает {len(types)} разных форм"
             )
+
+    if isinstance(node, RecursiveRefSchema):
+        raise ContractOverlayError(
+            f"overlay {where}: путь упирается в узел {node.name!r}, на котором отсечён цикл "
+            f"рекурсивного контракта. Генератор рекурсивной части не подменяется — задайте "
+            f"значение узла через %, например schema % {{...}}"
+        )
 
     if not path:
         _check_compatible(node, manual, where)

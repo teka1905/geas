@@ -81,6 +81,24 @@ def test_core_uses_non_gpl_jsonschema_format_extra(
     assert "Requires-Dist: jsonschema[format]" not in metadata
 
 
+def test_d42_extra_requires_a_version_with_optional_absent(
+    distributions: tuple[Path, Path],
+) -> None:
+    """Интеграция опирается на ``is_absent`` из d42 2.3: нижняя граница extra это отражает."""
+    wheel, _ = distributions
+    with zipfile.ZipFile(wheel) as archive:
+        metadata_name = next(
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        )
+        metadata = archive.read(metadata_name).decode("utf-8")
+
+    d42_requirements = [
+        line for line in metadata.splitlines() if line.startswith("Requires-Dist: d42")
+    ]
+    assert d42_requirements
+    assert all(">=2.3" in line for line in d42_requirements), d42_requirements
+
+
 def test_package_metadata_passes_twine(distributions: tuple[Path, Path]) -> None:
     """Метаданные пакета корректны с точки зрения twine."""
     wheel, sdist = distributions

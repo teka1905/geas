@@ -1,0 +1,160 @@
+# Рекурсия глазами d42: где отсекается цикл и что умеет отсечённый узел.
+#
+# createFolderTree — запрос без рекурсии, ответ рекурсивен через обязательный
+#   массив (FolderTree.children): направления генерируются независимо.
+# getRule — цикл через объединение: Rule = oneOf[AllOf, AnyOf, Flag], где
+#   AllOf/AnyOf содержат Rule. Выход из цикла — вариант Flag.
+# createReport — запрос выразим в d42, ответ нет (pattern вместе с minLength):
+#   отказ d42 в ответе не отнимает d42 у запроса.
+# getChain — цикл только через обязательное поле: конечного значения нет.
+openapi: "3.0.3"
+
+info:
+  title: Recursive d42 fixture
+  version: "1.0.0"
+
+paths:
+  /folders:
+    post:
+      operationId: createFolderTree
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewFolder"
+      responses:
+        "200":
+          description: Дерево папок с созданной папкой в корне
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FolderTree"
+  /rules:
+    get:
+      operationId: getRule
+      responses:
+        "200":
+          description: Правило доступа к документу
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Rule"
+  /reports:
+    post:
+      operationId: createReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewReport"
+      responses:
+        "200":
+          description: Созданный отчёт
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Report"
+  /chains:
+    get:
+      operationId: getChain
+      responses:
+        "200":
+          description: Цепочка, у которой нет конца
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Chain"
+
+components:
+  schemas:
+    NewFolder:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+    Folder:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+    FolderTree:
+      type: object
+      required: [folder, children]
+      properties:
+        folder:
+          $ref: "#/components/schemas/Folder"
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/FolderTree"
+    Rule:
+      oneOf:
+        - $ref: "#/components/schemas/AllOfRule"
+        - $ref: "#/components/schemas/AnyOfRule"
+        - $ref: "#/components/schemas/FlagRule"
+      discriminator:
+        propertyName: kind
+        mapping:
+          ALL: "#/components/schemas/AllOfRule"
+          ANY: "#/components/schemas/AnyOfRule"
+          FLAG: "#/components/schemas/FlagRule"
+    AllOfRule:
+      type: object
+      required: [kind, rules]
+      properties:
+        kind:
+          type: string
+          enum: [ALL]
+        rules:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/Rule"
+    AnyOfRule:
+      type: object
+      required: [kind, rules]
+      properties:
+        kind:
+          type: string
+          enum: [ANY]
+        rules:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/Rule"
+    FlagRule:
+      type: object
+      required: [kind, enabled]
+      properties:
+        kind:
+          type: string
+          enum: [FLAG]
+        enabled:
+          type: boolean
+    NewReport:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+    Report:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          pattern: "^[A-Z]+$"
+          minLength: 2
+    Chain:
+      type: object
+      required: [next]
+      properties:
+        next:
+          $ref: "#/components/schemas/Chain"

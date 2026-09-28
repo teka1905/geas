@@ -71,6 +71,7 @@
 | `deep_object.yaml` | `style: deepObject` в query | обе операции отклоняются |
 | `unknown_format.yaml` | `format: my-custom-tag` на строке | отклоняется при `unknown_formats: reject`, проходит при `annotate` |
 | `recursive.yaml` | самоссылка (`Node`) и взаимный цикл из трёх схем (`Alpha → Beta → Gamma → Alpha`) | разбирается, контракт помечается рекурсивным |
+| `recursive_d42.yaml` | четыре операции: обязательный рекурсивный массив при нерекурсивном запросе, цикл через `oneOf` с выходом, отказ d42 только в ответе, цикл только через обязательное поле | d42 генерируется с отсечкой цикла по направлениям; у `Chain` нет конечного значения |
 | `multi_content_types.yaml` | два content type у запроса, `application/json` + `application/pdf` у ответа | разбирается, PDF-вариант помечается как непредставимый |
 | `charset_media_type.yaml` | `application/json;charset=UTF-8` и вариант с пробелом и другим регистром | оба нормализуются в `application/json` |
 | `default_response.yaml` | единственный ответ операции — `default` | разбирается |

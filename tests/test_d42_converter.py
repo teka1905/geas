@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 from d42 import ValidationException, optional, schema, validate_or_fail
@@ -517,26 +518,53 @@ def test_typed_additional_properties_support_fake_substitution_and_make_required
     validate_or_fail(required, {"fixed": 7, "dynamic": "value"})
 
 
-def test_self_recursive_definition_is_rejected() -> None:
+def test_self_recursion_is_cut_on_the_closing_reference() -> None:
+    """Самоссылка не отклоняется: ссылка, замыкающая цикл, становится листом.
+
+    Лист проверяет вложенные уровни по JSON Schema определения, поэтому закрытость
+    объекта держится на любой глубине, а не только на верхнем уровне.
+    """
+    from geas.integrations.d42 import RecursiveRefSchema
+
     definitions = {
         "Node": obj(prop("child", RefNode(origin=ORIGIN, name="Node"), required=False), closed=True)
     }
-    with pytest.raises(RecursiveSchemaError) as info:
-        to_d42(RefNode(origin=ORIGIN, name="Node"), definitions)
+    converted = to_d42(RefNode(origin=ORIGIN, name="Node"), definitions)
 
-    assert "Node -> Node" in str(info.value)
+    child, is_optional = converted.props.keys["child"]
+    assert is_optional is True
+    assert isinstance(child, RecursiveRefSchema)
+    assert child.name == "Node"
+    assert "recursive_ref('Node')" in repr(converted)
+    validate_or_fail(converted, {"child": {"child": {}}})
+    with pytest.raises(ValidationException, match="Node"):
+        validate_or_fail(converted, {"child": {"child": {"extra": 1}}})
 
 
-def test_mutual_recursion_names_the_whole_cycle() -> None:
+def test_mutual_recursion_is_cut_where_the_cycle_closes_from_the_root() -> None:
+    """Место отсечки зависит от корня: цикл режется на ссылке, которая в него возвращается."""
+    from geas.integrations.d42 import RecursiveRefSchema
+
     definitions = {
         "Alpha": obj(prop("beta", RefNode(origin=ORIGIN, name="Beta")), closed=True),
         "Beta": obj(prop("gamma", RefNode(origin=ORIGIN, name="Gamma")), closed=True),
         "Gamma": obj(prop("alpha", RefNode(origin=ORIGIN, name="Alpha")), closed=True),
     }
-    with pytest.raises(RecursiveSchemaError) as info:
-        to_d42(RefNode(origin=ORIGIN, name="Alpha"), definitions)
 
-    assert "Alpha -> Beta -> Gamma -> Alpha" in str(info.value)
+    def descend(schema_: Any, *path: str) -> Any:
+        for key in path:
+            schema_, _ = schema_.props.keys[key]
+        return schema_
+
+    from_alpha = to_d42(RefNode(origin=ORIGIN, name="Alpha"), definitions)
+    leaf = descend(from_alpha, "beta", "gamma", "alpha")
+    assert isinstance(leaf, RecursiveRefSchema)
+    assert leaf.name == "Alpha"
+
+    from_beta = to_d42(RefNode(origin=ORIGIN, name="Beta"), definitions)
+    leaf = descend(from_beta, "gamma", "alpha", "beta")
+    assert isinstance(leaf, RecursiveRefSchema)
+    assert leaf.name == "Beta"
 
 
 def test_recursive_error_is_an_unsupported_construct_error() -> None:

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "geas"
-version = "0.4.0"
+version = "0.5.0"
 description = "Генерация тестовых контрактов, JSON Schema, d42-схем и operation-aware моков из checked-in OpenAPI"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -29,11 +29,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-d42 = ["d42>=2,<3"]
+d42 = ["d42>=2.3,<3"]
 jj = ["jj>=2.9,<3"]
-all = ["d42>=2,<3", "jj>=2.9,<3"]
+all = ["d42>=2.3,<3", "jj>=2.9,<3"]
 dev = [
-    "d42>=2,<3",
+    "d42>=2.3,<3",
     "jj>=2.9,<3",
     "pytest>=8,<9",
     "pytest-asyncio>=0.24,<2",

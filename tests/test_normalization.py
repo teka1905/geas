@@ -1001,10 +1001,14 @@ def test_write_only_is_ignored_by_swagger2(tmp_path: Path) -> None:
     ("key", "definitions"),
     [("main.getTree", ["Node"]), ("main.getCycle", ["Alpha", "Beta", "Gamma"])],
 )
-def test_recursive_schemas_build_but_disable_d42(
+def test_recursive_schemas_build_with_d42_enabled(
     tmp_path: Path, key: str, definitions: list[str]
 ) -> None:
-    """Рекурсия выразима в JSON Schema через ``$defs``, но не выразима в d42."""
+    """Рекурсия выразима в JSON Schema через ``$defs``; d42 при этом не отключается.
+
+    Цикл в d42 отсекается при рендере, поэтому документ контракта объявляет
+    d42-модуль ответа, а флаг ``recursive`` остаётся справочным.
+    """
     project = make_project(tmp_path / "project")
     project.write_spec("api/spec.yaml", spec("features", "recursive.yaml"))
     project.write_manifest(sources={"main": {"path": "api/spec.yaml", "selection": "all"}})
@@ -1015,16 +1019,17 @@ def test_recursive_schemas_build_but_disable_d42(
     assert sorted(name for name, _ in built.response_definitions) == definitions
     schema = built.document["responses"][0]["schema"]
     assert sorted(schema["$defs"]) == definitions
+    slug = built.document["slug"]
     assert built.document["d42"] == {
-        "enabled": False,
+        "enabled": True,
         "recursive": True,
         "request_module": None,
-        "response_module": None,
+        "response_module": f"{slug}_response",
     }
 
 
-def test_no_d42_module_is_rendered_for_recursive_operations(tmp_path: Path) -> None:
-    """Для рекурсивных операций d42-модули не рендерятся вовсе."""
+def test_d42_modules_are_rendered_for_recursive_operations(tmp_path: Path) -> None:
+    """Рекурсивные операции получают d42-модули с отсечённым циклом и отчёт о месте отсечки."""
     project = make_project(tmp_path / "project")
     project.write_spec("api/spec.yaml", spec("features", "recursive.yaml"))
     project.write_manifest(sources={"main": {"path": "api/spec.yaml", "selection": "all"}})
@@ -1032,8 +1037,13 @@ def test_no_d42_module_is_rendered_for_recursive_operations(tmp_path: Path) -> N
     artifacts = project.render()
 
     paths = [item.path for item in artifacts.files]
-    assert not [path for path in paths if path.startswith("_d42/")]
-    assert "contracts/main__get_tree.json" in paths
+    assert "_d42/main__get_tree_response.py" in paths
+    assert "_d42/main__get_cycle_response.py" in paths
+    assert artifacts.d42_disabled == ()
+    assert artifacts.d42_cycle_cuts == (
+        ("main.getCycle", "response", "Gamma", "Alpha"),
+        ("main.getTree", "response", "Node", "Node"),
+    )
 
 
 def test_self_referential_schema_keeps_the_cycle_in_defs(tmp_path: Path) -> None:

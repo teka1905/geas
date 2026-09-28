@@ -57,10 +57,21 @@ Fail closed (список полный)
 * типизированный ``additionalProperties`` выражается через
   :class:`~geas.integrations.d42.typed_dict.TypedDictSchema`: обычный
   d42 ``schema.dict`` не умеет проверять значения динамических ключей;
-* рекурсивные ``$ref`` — d42-схема строится «по значению», рекурсия развернулась бы
-  бесконечно (:class:`~geas.errors.RecursiveSchemaError`);
 * ``enum``, чьи литералы противоречат соседним ограничениям (``pattern``, границам,
   ``multipleOf``): противоречие разрешимо на этапе сборки, поэтому проверяется сразу.
+
+Рекурсия
+--------
+
+d42-схема строится «по значению», и рекурсивный ``$ref`` развернулся бы бесконечно.
+Поэтому цикл отсекается (:func:`cut_cycles`): граф определений обходится в глубину
+от корней, и ссылка, которая возвращает обход в определение с текущего пути,
+становится листом :class:`~geas.integrations.d42.recursion.RecursiveRefSchema`.
+Лист проверяет значение по JSON Schema определения, ``%`` и ``fake()`` делегирует
+типизированной схеме того же определения. Это не расширение контракта: всё, что
+d42 не развернул, проверяет JSON Schema. Порядок обхода детерминирован: корни — в
+переданном порядке, дальше свойства по имени и варианты объединения по порядку,
+поэтому место отсечки зависит только от контракта и набора корней.
 
 Дополнительно: план (внутреннее дерево вызовов d42) — общий с
 :mod:`geas.integrations.d42.renderer`. Благодаря этому
@@ -71,7 +82,7 @@ Fail closed (список полный)
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -84,6 +95,7 @@ from geas.errors import (
     UnsupportedConstructError,
     ValidationFailedError,
 )
+from geas.jsonschema_gen import definitions_json_schema
 from geas.models import (
     INTEGER_FORMAT_BOUNDS,
     AdditionalProperties,
@@ -109,9 +121,10 @@ from geas.paths import (
     variant_segment,
 )
 
+from .recursion import RecursionContract
 from .typed_dict import typed_dict
 
-__all__ = ["to_d42"]
+__all__ = ["cut_cycles", "to_d42"]
 
 
 class _NoLiteral:
@@ -133,6 +146,13 @@ _Call = tuple[str, tuple[Any, ...]]
 @dataclass(frozen=True, slots=True)
 class _Ref:
     """Ссылка на именованное определение бандла."""
+
+    name: str
+
+
+@dataclass(frozen=True, slots=True)
+class _Cut:
+    """Ссылка, замыкающая цикл: лист, который проверяется по JSON Schema определения."""
 
     name: str
 
@@ -171,7 +191,7 @@ class _UnionPlan:
 
 
 #: План — дерево вызовов d42, из которого собирается и объект, и исходный текст.
-_Plan = _Ref | _Leaf | _DictPlan | _ListPlan | _UnionPlan
+_Plan = _Ref | _Cut | _Leaf | _DictPlan | _ListPlan | _UnionPlan
 
 #: План значения ``null``: выносится в константу, чтобы не плодить объекты.
 _NONE_PLAN = _Leaf(base="none")
@@ -181,15 +201,18 @@ def to_d42(node: SchemaNode, definitions: Mapping[str, SchemaNode]) -> GenericSc
     """Собрать живую d42-схему для узла IR.
 
     ``definitions`` — именованные определения бандла операции; ``RefNode``
-    разрешается через них. Рекурсия отклоняется
-    :class:`~geas.errors.RecursiveSchemaError`, отсутствующее
-    определение — :class:`~geas.errors.RefResolutionError`.
+    разрешается через них, отсутствующее определение —
+    :class:`~geas.errors.RefResolutionError`. Цикл отсекается от ``node`` как от
+    единственного корня (см. раздел «Рекурсия» в докстринге модуля).
     """
     root_plan, plans = plan_bundle(node, definitions)
+    contract = recursion_contract(plans, definitions)
     built: dict[str, GenericSchema] = {}
     for name in topological_order(plans):
-        built[name] = build(plans[name], built)
-    return build(root_plan, built)
+        built[name] = build(plans[name], built, contract)
+    if contract is not None:
+        contract.bind({name: built[name] for name in sorted(cut_targets(plans.values()))})
+    return build(root_plan, built, contract)
 
 
 # --------------------------------------------------------------------------------------
@@ -211,7 +234,7 @@ def plan_node(
 def plan_bundle(
     node: SchemaNode, definitions: Mapping[str, SchemaNode]
 ) -> tuple[_Plan, dict[str, _Plan]]:
-    """План корня плюс планы всех определений, достижимых из него."""
+    """План корня плюс планы всех определений, достижимых из него, с отсечёнными циклами."""
     root_plan = plan_node(node, definitions)
     plans: dict[str, _Plan] = {}
     pending = sorted(referenced_names(root_plan))
@@ -221,11 +244,150 @@ def plan_bundle(
             continue
         plans[name] = plan_node(definitions[name], definitions, definition=name)
         pending.extend(sorted(referenced_names(plans[name])))
-    return root_plan, plans
+    cut, _ = cut_cycles([root_plan], plans)
+    return root_plan, cut
+
+
+def cut_cycles(
+    roots: Sequence[_Plan], plans: Mapping[str, _Plan]
+) -> tuple[dict[str, _Plan], tuple[tuple[str, str], ...]]:
+    """Разорвать циклы в графе определений.
+
+    Граф обходится в глубину: сначала от корней в переданном порядке, затем от
+    оставшихся определений по алфавиту. Ссылка ``A → B``, где ``B`` уже лежит на
+    текущем пути обхода, замыкает цикл: в плане ``A`` все ссылки на ``B``
+    заменяются листом :class:`_Cut`. Остальные ссылки не трогаются, поэтому
+    определение типизировано вплоть до места, где цикл замкнулся.
+
+    Возвращает новые планы и отсечённые рёбра ``(A, B)`` в стабильном порядке.
+    """
+    on_path: set[str] = set()
+    done: set[str] = set()
+    back: set[tuple[str, str]] = set()
+
+    def visit(start: str) -> None:
+        # Итеративный обход: в реальных спецификациях сотни определений, и рекурсия
+        # Python упёрлась бы в лимит глубины раньше, чем закончился бы граф.
+        on_path.add(start)
+        stack: list[tuple[str, Iterator[str]]] = [(start, iter(ordered_references(plans[start])))]
+        while stack:
+            owner, children = stack[-1]
+            child = next(children, None)
+            if child is None:
+                stack.pop()
+                on_path.discard(owner)
+                done.add(owner)
+                continue
+            if child not in plans:
+                continue
+            if child in on_path:
+                back.add((owner, child))
+            elif child not in done:
+                on_path.add(child)
+                stack.append((child, iter(ordered_references(plans[child]))))
+
+    for root in roots:
+        for name in ordered_references(root):
+            if name in plans and name not in done:
+                visit(name)
+    for name in sorted(plans):
+        if name not in done:
+            visit(name)
+
+    cut = {
+        name: _replace_refs(plan, {target for owner, target in back if owner == name})
+        for name, plan in plans.items()
+    }
+    return cut, tuple(sorted(back))
+
+
+def ordered_references(plan: _Plan) -> tuple[str, ...]:
+    """Имена определений, на которые ссылается план, в порядке обхода и без повторов.
+
+    Порядок — тот же, что у рендера: свойства по имени, затем тип дополнительных
+    значений, элементы массива, варианты объединения по порядку.
+    """
+    found: dict[str, None] = {}
+
+    def walk(item: _Plan) -> None:
+        if isinstance(item, _Ref):
+            found.setdefault(item.name, None)
+        elif isinstance(item, _DictPlan):
+            for _, sub, _ in item.entries:
+                walk(sub)
+            if item.additional is not None:
+                walk(item.additional)
+        elif isinstance(item, _ListPlan):
+            walk(item.items)
+        elif isinstance(item, _UnionPlan):
+            for variant in item.variants:
+                walk(variant)
+
+    walk(plan)
+    return tuple(found)
+
+
+def cut_targets(plans: Iterable[_Plan]) -> set[str]:
+    """Имена определений, на которых в планах стоят отсечённые узлы."""
+    names: set[str] = set()
+
+    def walk(item: _Plan) -> None:
+        if isinstance(item, _Cut):
+            names.add(item.name)
+        elif isinstance(item, _DictPlan):
+            for _, sub, _ in item.entries:
+                walk(sub)
+            if item.additional is not None:
+                walk(item.additional)
+        elif isinstance(item, _ListPlan):
+            walk(item.items)
+        elif isinstance(item, _UnionPlan):
+            for variant in item.variants:
+                walk(variant)
+
+    for plan in plans:
+        walk(plan)
+    return names
+
+
+def recursion_contract(
+    plans: Mapping[str, _Plan], definitions: Mapping[str, SchemaNode]
+) -> RecursionContract | None:
+    """Контракт рекурсии для отсечённых узлов планов; ``None``, если циклов нет."""
+    names = cut_targets(plans.values())
+    if not names:
+        return None
+    return RecursionContract(definitions_json_schema(names, definitions))
+
+
+def _replace_refs(plan: _Plan, targets: set[str]) -> _Plan:
+    """Заменить ссылки на ``targets`` отсечёнными узлами."""
+    if not targets:
+        return plan
+    if isinstance(plan, _Ref):
+        return _Cut(name=plan.name) if plan.name in targets else plan
+    if isinstance(plan, _DictPlan):
+        return _DictPlan(
+            entries=tuple(
+                (name, _replace_refs(sub, targets), is_optional)
+                for name, sub, is_optional in plan.entries
+            ),
+            open=plan.open,
+            additional=None if plan.additional is None else _replace_refs(plan.additional, targets),
+        )
+    if isinstance(plan, _ListPlan):
+        return _ListPlan(items=_replace_refs(plan.items, targets), calls=plan.calls)
+    if isinstance(plan, _UnionPlan):
+        return _UnionPlan(variants=tuple(_replace_refs(item, targets) for item in plan.variants))
+    return plan
 
 
 def referenced_names(plan: _Plan) -> set[str]:
-    """Имена определений, на которые ссылается план (без транзитивности)."""
+    """Имена определений, на которые ссылается план (без транзитивности).
+
+    Отсечённые узлы сюда не входят: они не зависимость порядка сборки, а поздняя
+    ссылка через :class:`~geas.integrations.d42.recursion.RecursionContract`.
+    """
     if isinstance(plan, _Ref):
         return {plan.name}
     if isinstance(plan, _DictPlan):
@@ -249,7 +411,8 @@ def topological_order(plans: Mapping[str, _Plan]) -> tuple[str, ...]:
     """Определения в порядке «сначала зависимости».
 
     Независимые определения идут по алфавиту — порядок артефакта детерминирован.
-    Цикл отклоняется :class:`~geas.errors.RecursiveSchemaError`
+    Планы должны быть уже пропущены через :func:`cut_cycles`; оставшийся цикл —
+    ошибка вызывающего, она отклоняется :class:`~geas.errors.RecursiveSchemaError`
     с перечислением участников.
     """
     order: list[str] = []
@@ -262,8 +425,7 @@ def topological_order(plans: Mapping[str, _Plan]) -> tuple[str, ...]:
         if name in stack:
             cycle = " -> ".join([*stack[stack.index(name) :], name])
             raise RecursiveSchemaError(
-                f"схема рекурсивна и не выражается в d42: {cycle}. "
-                f"Разорвите цикл в спецификации или оформите waiver на этот узел"
+                f"в планах d42 остался цикл {cycle}: планы не пропущены через cut_cycles"
             )
         stack.append(name)
         for dependency in sorted(referenced_names(plans[name])):
@@ -705,10 +867,24 @@ def _error(
 # --------------------------------------------------------------------------------------
 
 
-def build(plan: _Plan, built: Mapping[str, GenericSchema]) -> GenericSchema:
-    """Собрать объект d42 по плану; ``built`` — уже собранные определения."""
+def build(
+    plan: _Plan,
+    built: Mapping[str, GenericSchema],
+    contract: RecursionContract | None = None,
+) -> GenericSchema:
+    """Собрать объект d42 по плану.
+
+    ``built`` — уже собранные определения, ``contract`` — контракт рекурсии, из
+    которого берутся отсечённые узлы.
+    """
     if isinstance(plan, _Ref):
         return built[plan.name]
+    if isinstance(plan, _Cut):
+        if contract is None:
+            raise RecursiveSchemaError(
+                f"в плане есть отсечённый узел {plan.name!r}, но контракт рекурсии не передан"
+            )
+        return contract.ref(plan.name)
     if isinstance(plan, _Leaf):
         result: Any = getattr(schema, plan.base)
         if not isinstance(plan.literal, _NoLiteral):
@@ -719,18 +895,18 @@ def build(plan: _Plan, built: Mapping[str, GenericSchema]) -> GenericSchema:
     if isinstance(plan, _DictPlan):
         keys: dict[Any, Any] = {}
         for name, sub, is_optional in plan.entries:
-            keys[optional(name) if is_optional else name] = build(sub, built)
+            keys[optional(name) if is_optional else name] = build(sub, built, contract)
         if plan.additional is not None:
-            return typed_dict(schema.dict(keys), additional=build(plan.additional, built))
+            return typed_dict(schema.dict(keys), additional=build(plan.additional, built, contract))
         if plan.open:
             keys[...] = ...
         return schema.dict(keys)
     if isinstance(plan, _ListPlan):
-        listed: Any = schema.list(build(plan.items, built))
+        listed: Any = schema.list(build(plan.items, built, contract))
         for name, args in plan.calls:
             listed = getattr(listed, name)(*args)
         return listed  # type: ignore[no-any-return]
-    return schema.any(*(build(variant, built) for variant in plan.variants))
+    return schema.any(*(build(variant, built, contract) for variant in plan.variants))
 
 
 def validate_with_d42(
