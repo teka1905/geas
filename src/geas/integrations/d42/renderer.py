@@ -52,10 +52,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from geas.errors import ArtifactError, NamespaceCollisionError, RefResolutionError
 from geas.integrations.d42.converter import (
+    DroppedBranchNote,
     _Cut,
     _DictPlan,
     _Leaf,
@@ -74,7 +76,7 @@ from geas.jsonschema_gen import definitions_json_schema
 from geas.models import SchemaNode
 from geas.naming import d42_schema_name, python_identifier
 
-__all__ = ["cycle_cuts", "render_expression", "render_module"]
+__all__ = ["ModuleNotes", "cycle_cuts", "module_notes", "render_expression", "render_module"]
 
 #: Максимальная длина строки в сгенерированном модуле.
 LINE_LENGTH = 100
@@ -168,23 +170,42 @@ def render_module(
     return "\n".join(line.rstrip() for line in text.split("\n")).rstrip("\n") + "\n"
 
 
+@dataclass(frozen=True, slots=True)
+class ModuleNotes:
+    """Что модуль сделал с контрактом ради d42 — для отчёта ``geas update``."""
+
+    #: Отсечённые рёбра ``(определение, на которое ссылается отсечённый узел)``.
+    cuts: tuple[tuple[str, str], ...]
+    #: Ветки ``allOf``, выброшенные как пустые, в стабильном порядке.
+    dropped: tuple[DroppedBranchNote, ...]
+
+
+def module_notes(*, definitions: Definitions, roots: Sequence[SchemaNode]) -> ModuleNotes:
+    """Где модуль с такими определениями и корнями отсечёт циклы и какие ветки выбросит.
+
+    Результат — то же, что сделает :func:`render_module` с теми же аргументами.
+    """
+    definition_nodes = dict(definitions)
+    dropped: list[DroppedBranchNote] = []
+    plans = {
+        name: plan_node(node, definition_nodes, definition=name, dropped=dropped)
+        for name, node in definition_nodes.items()
+    }
+    root_plans = [plan_node(node, definition_nodes, dropped=dropped) for node in roots]
+    _, back = cut_cycles(root_plans, plans)
+    unique = sorted(set(dropped), key=lambda note: (note.where, note.branch, note.reason))
+    return ModuleNotes(cuts=back, dropped=tuple(unique))
+
+
 def cycle_cuts(
     *, definitions: Definitions, roots: Sequence[SchemaNode]
 ) -> tuple[tuple[str, str], ...]:
     """Где модуль с такими определениями и корнями отсечёт циклы.
 
     Возвращает рёбра ``(определение, на которое ссылается отсечённый узел)`` — то же,
-    что сделает :func:`render_module` с теми же аргументами. Нужен для отчёта
-    ``geas update``.
+    что сделает :func:`render_module` с теми же аргументами.
     """
-    definition_nodes = dict(definitions)
-    plans = {
-        name: plan_node(node, definition_nodes, definition=name)
-        for name, node in definition_nodes.items()
-    }
-    root_plans = [plan_node(node, definition_nodes) for node in roots]
-    _, back = cut_cycles(root_plans, plans)
-    return back
+    return module_notes(definitions=definitions, roots=roots).cuts
 
 
 def _root_plans(

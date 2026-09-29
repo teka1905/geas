@@ -21,6 +21,7 @@ waiver адресует точку внутри общего ``$ref``, этот 
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,12 @@ __all__ = ["SUPPORTED_FORMATS", "SchemaDialectConfig", "SchemaNormalizer"]
 #: Максимальная глубина вложенности схемы. Защищает от рекурсии, собранной
 #: YAML-якорями в обход ``$ref``.
 _MAX_DEPTH = 100
+
+#: Правила, которые патчат схему, стоящую в точке контракта. На ``$ref``-точке
+#: они действуют на цель ссылки — см. :meth:`SchemaNormalizer._resolve_ref_point`.
+_POINT_PATCH_RULES = frozenset(
+    {WaiverRule.ALLOW_NULL, WaiverRule.IGNORE_DISCRIMINATOR, WaiverRule.EXTEND_ENUM}
+)
 
 #: ``format``, значение которых библиотека признаёт. Всё остальное — либо ошибка,
 #: либо аннотация, в зависимости от ``policies.unknown_formats``.
@@ -215,6 +222,8 @@ class SchemaNormalizer:
         self._building: set[str] = set()
         self._inline_stack: list[tuple[str, str]] = []
         self._waiver_prefixes = self._collect_waiver_prefixes()
+        self._patch_points = self._collect_points(_POINT_PATCH_RULES)
+        self._replace_points = self._collect_points(frozenset({WaiverRule.REPLACE_SCHEMA}))
         self._subtree_anchors = self._collect_subtree_anchors()
         self._variant: tuple[int | str | None, str | None] = (None, None)
         # Исходные фрагменты в точках привязки subtree-waiver'ов и посчитанные по
@@ -300,6 +309,16 @@ class SchemaNormalizer:
             for depth in range(len(waiver.path) + 1):
                 prefixes.add(waiver.path[:depth])
         return prefixes
+
+    def _collect_points(self, rules: frozenset[WaiverRule]) -> frozenset[ContractPath]:
+        """Точки waiver'ов этой операции и направления с одним из правил ``rules``."""
+        return frozenset(
+            waiver.path
+            for waiver in self._waivers.waivers
+            if waiver.operation == self._operation_key
+            and waiver.direction == self._direction
+            and waiver.rule in rules
+        )
 
     def _collect_subtree_anchors(self) -> tuple[ContractPath, ...]:
         """Точки привязки subtree-waiver'ов этой операции и направления."""
@@ -452,7 +471,17 @@ class SchemaNormalizer:
             self._fail(frame, f"ожидался Schema Object, получено {type(node).__name__}")
 
         if allow_replace:
-            waiver = self._consult(WaiverRule.REPLACE_SCHEMA, frame)
+            source = node
+            if "$ref" in node and frame.path in self._replace_points:
+                source = self._resolve_ref_point(frame)[0].node
+            waiver = self._consult_at(
+                WaiverRule.REPLACE_SCHEMA,
+                path=frame.path,
+                node=node,
+                base=frame.base,
+                origin=frame.origin,
+                source_digest=semantic_source_digest(source),
+            )
             if waiver is not None:
                 replaced = _Frame(
                     node=waiver.replacement,
@@ -462,6 +491,9 @@ class SchemaNormalizer:
                     depth=frame.depth,
                 )
                 return self._normalize(replaced, allow_replace=False)
+
+        if "$ref" in node and frame.path in self._patch_points:
+            return self._normalize_ref_point(frame, skip_rules=skip_rules)
 
         adjustments: list[tuple[WaiverRule, Any, Any]] = []
         for rule, patch in (
@@ -561,13 +593,7 @@ class SchemaNormalizer:
         marker = (self._registry.document_id(resolved.document_path), resolved.pointer)
 
         if inline:
-            if marker in self._inline_stack:
-                self._fail(
-                    frame,
-                    f"путь waiver'а проходит через рекурсивный $ref {node['$ref']!r} — "
-                    f"развернуть его по месту невозможно. Если поддерево накрыто waiver'ом "
-                    f"с 'scope: subtree', сузьте его так, чтобы рекурсия осталась снаружи",
-                )
+            self._guard_inline_recursion(frame, marker)
             self._inline_stack.append(marker)
             try:
                 inner = self._normalize(
@@ -599,6 +625,72 @@ class SchemaNormalizer:
             finally:
                 self._building.discard(name)
         return RefNode(origin=frame.origin, nullable=nullable, name=name)
+
+    def _normalize_ref_point(
+        self, frame: _Frame, *, skip_rules: frozenset[WaiverRule]
+    ) -> SchemaNode:
+        """Нормализовать ``$ref`` в точке, где waiver патчит схему.
+
+        ``allow_null``, ``extend_enum`` и ``ignore_discriminator`` правят схему,
+        стоящую в точке контракта, — у ``$ref`` это :meth:`_resolve_ref_point`.
+        Waiver сверяется только с ней и ровно один раз.
+        """
+        target, markers = self._resolve_ref_point(frame)
+        for marker in markers:
+            self._guard_inline_recursion(frame, marker)
+        self._inline_stack.extend(markers)
+        try:
+            return self._normalize(target, allow_replace=False, skip_rules=skip_rules)
+        finally:
+            del self._inline_stack[-len(markers) :]
+
+    def _resolve_ref_point(self, frame: _Frame) -> tuple[_Frame, tuple[tuple[str, str], ...]]:
+        """Схема в ``$ref``-точке контракта: цель ссылки с наложенными соседями.
+
+        Соседи ``$ref`` (``readOnly``, nullable-маркер, аннотации) накладываются
+        поверх цели — так же её разворачивает
+        :func:`~geas.normalization.refs.expand_refs`; цепочка ``$ref`` → ``$ref``
+        проходится до конца. По этой схеме сверяется waiver в точке: вынос
+        фрагмента в ``$ref`` отпечаток не меняет, а правка цели делает waiver
+        устаревшим. Возвращает кадр схемы и маркеры пройденных целей.
+        """
+        nullable_key = self._dialect.nullable_key
+        node, base, origin = frame.node, frame.base, frame.origin
+        nullable = False
+        markers: list[tuple[str, str]] = []
+        while isinstance(node, dict) and "$ref" in node:
+            SpecRegistry.check_ref_siblings(
+                {k: v for k, v in node.items() if k not in {"readOnly", "writeOnly", nullable_key}},
+                origin=origin,
+            )
+            resolved = self._registry.resolve(node["$ref"], base=base, origin=origin)
+            marker = (self._registry.document_id(resolved.document_path), resolved.pointer)
+            if marker in markers:
+                self._fail(frame, f"цепочка $ref {frame.node['$ref']!r} замыкается сама на себя")
+            markers.append(marker)
+            # Nullable-маркер рядом с ``$ref`` добавляет null, но не снимает его с
+            # цели — как и при обычном развороте в :meth:`_normalize_ref`.
+            nullable = nullable or node.get(nullable_key) is True
+            siblings = {k: v for k, v in node.items() if k not in {"$ref", nullable_key}}
+            target = resolved.value
+            node = {**target, **siblings} if isinstance(target, dict) else target
+            base, origin = resolved.document_path, resolved.origin
+        if nullable and isinstance(node, dict):
+            node = {**node, nullable_key: True}
+        resolved_frame = _Frame(
+            node=node, base=base, origin=origin, path=frame.path, depth=frame.depth + 1
+        )
+        return resolved_frame, tuple(markers)
+
+    def _guard_inline_recursion(self, frame: _Frame, marker: tuple[str, str]) -> None:
+        """Отказать, если ``$ref`` по месту разворачивается внутри самого себя."""
+        if marker in self._inline_stack:
+            self._fail(
+                frame,
+                f"путь waiver'а проходит через рекурсивный $ref {frame.node['$ref']!r} — "
+                f"развернуть его по месту невозможно. Если поддерево накрыто waiver'ом "
+                f"с 'scope: subtree', сузьте его так, чтобы рекурсия осталась снаружи",
+            )
 
     def _definition_name(self, resolved: Any, frame: _Frame) -> str:
         """Стабильное имя определения. Коллизии разводятся идентификатором файла."""
@@ -644,7 +736,9 @@ class SchemaNormalizer:
             composed = self._normalize_composition(frame, node, composition_keys[0])
             if not local_keys:
                 return _with_nullable(composed, nullable)
-            local = self._normalize_plain(frame, node)
+            local, composed = self._without_pruned_requirements(
+                (self._normalize_plain(frame, node), composed)
+            )
             return AllOfNode(origin=frame.origin, nullable=nullable, parts=(local, composed))
 
         return _with_nullable(self._normalize_plain(frame, node), nullable)
@@ -667,10 +761,11 @@ class SchemaNormalizer:
                 )
             )
         if key == "allOf":
-            merged = self._try_merge_all_of(frame, tuple(parts))
+            conjuncts = self._without_pruned_requirements(tuple(parts))
+            merged = self._try_merge_all_of(frame, conjuncts)
             if merged is not None:
                 return merged
-            return AllOfNode(origin=frame.origin, parts=tuple(parts))
+            return AllOfNode(origin=frame.origin, parts=conjuncts)
 
         discriminator = self._normalize_discriminator(frame, node, tuple(parts))
         return UnionNode(
@@ -679,6 +774,52 @@ class SchemaNormalizer:
             variants=tuple(parts),
             discriminator=discriminator,
         )
+
+    def _without_pruned_requirements(self, parts: tuple[SchemaNode, ...]) -> tuple[SchemaNode, ...]:
+        """Снять с частей ``allOf`` требование ключей, которые направление вырезало.
+
+        ``required`` на ``readOnly``-свойство действует только в ответе, на
+        ``writeOnly`` — только в запросе. Внутри одного объекта это даёт
+        :meth:`_is_pruned`. У наследника ``{required: [id], allOf: [$ref База]}``
+        требование и свойство живут в разных частях, и без этого шага ``id`` из
+        ``readOnly`` базы стал бы обязательным ключом запроса без схемы.
+        """
+        pruned: set[str] = set()
+        for part in parts:
+            pruned |= self._pruned_names(part, frozenset())
+        if not pruned:
+            return parts
+        return tuple(
+            replace(
+                part,
+                required_undeclared=tuple(
+                    name for name in part.required_undeclared if name not in pruned
+                ),
+            )
+            if isinstance(part, ObjectNode) and pruned.intersection(part.required_undeclared)
+            else part
+            for part in parts
+        )
+
+    def _pruned_names(self, node: SchemaNode, seen: frozenset[str]) -> set[str]:
+        """Ключи верхнего уровня, которые направление вырезало где-то в ``node``."""
+        if isinstance(node, ObjectNode):
+            return set(node.pruned)
+        if isinstance(node, RefNode):
+            target = self._definitions.get(node.name)
+            if target is None or node.name in seen:
+                # Определение ещё строится (рекурсия) — его вклад виден выше по стеку.
+                return set()
+            return self._pruned_names(target, seen | {node.name})
+        children: tuple[SchemaNode, ...] = ()
+        if isinstance(node, AllOfNode):
+            children = node.parts
+        elif isinstance(node, UnionNode):
+            children = node.variants
+        names: set[str] = set()
+        for child in children:
+            names |= self._pruned_names(child, seen)
+        return names
 
     def _try_merge_all_of(self, frame: _Frame, parts: tuple[SchemaNode, ...]) -> ObjectNode | None:
         """Слить ``allOf`` только тогда, когда совместимость доказуема.
@@ -705,7 +846,11 @@ class SchemaNormalizer:
 
         properties: dict[str, PropertySpec] = {}
         additional: AdditionalProperties | SchemaNode = AdditionalProperties.ALLOWED
+        undeclared: set[str] = set()
+        pruned: set[str] = set()
         for part in resolved:
+            undeclared.update(part.required_undeclared)
+            pruned.update(part.pruned)
             if part.additional_properties is not AdditionalProperties.ALLOWED:
                 if (
                     additional is not AdditionalProperties.ALLOWED
@@ -732,10 +877,21 @@ class SchemaNormalizer:
             # Пересечение таких объектов зависит от того, какие свойства видит
             # каждое слагаемое по отдельности: сливать нельзя.
             return None
+        # Требование ключа, который направление вырезало у другой части, действует
+        # только в другом направлении (ссылки-части не проходят _without_pruned_requirements).
+        undeclared -= pruned
+        # Обязательный ключ одной части, объявленный другой, становится обязательным
+        # свойством; не объявленный никем остаётся обязательным ключом без схемы.
+        for name in undeclared & set(properties):
+            properties[name] = PropertySpec(
+                name=name, schema=properties[name].schema, required=True
+            )
         return ObjectNode(
             origin=frame.origin,
             properties=tuple(sorted(properties.values(), key=lambda item: item.name)),
             additional_properties=additional,
+            required_undeclared=tuple(sorted(undeclared - set(properties))),
+            pruned=tuple(sorted(pruned)),
         )
 
     def _normalize_discriminator(
@@ -890,18 +1046,33 @@ class SchemaNormalizer:
         ):
             self._fail(frame, "required должен быть списком строк")
         required = set(raw_required)
-        dangling = sorted(required - set(raw_properties))
-        if dangling and raw_properties:
+        # Ключ из required без схемы в properties законен рядом с композицией: его
+        # схему задаёт другая часть (наследование springdoc — {required: [...],
+        # allOf: [...]}). В одиночном объекте с непустым properties это почти
+        # наверняка опечатка.
+        undeclared = sorted(required - set(raw_properties))
+        composed = any(key in node for key in ("allOf", "oneOf", "anyOf"))
+        if undeclared and raw_properties and not composed:
             self._fail(
                 frame,
-                f"required перечисляет отсутствующие свойства {dangling}",
+                f"required перечисляет отсутствующие свойства {undeclared}",
+                waivable=WaiverRule.ALLOW_ANY,
+            )
+        if undeclared and node.get("additionalProperties") is False:
+            self._fail(
+                frame,
+                f"required перечисляет {undeclared}, но additionalProperties: false "
+                f"запрещает ключи вне properties: такому объекту не соответствует ни "
+                f"одно значение",
                 waivable=WaiverRule.ALLOW_ANY,
             )
 
         properties: list[PropertySpec] = []
+        pruned: list[str] = []
         for name in sorted(raw_properties):
             raw_property = raw_properties[name]
             if self._is_pruned(frame, name, raw_property):
+                pruned.append(name)
                 continue
             schema = self._normalize(
                 _Frame(
@@ -917,7 +1088,17 @@ class SchemaNormalizer:
                 is_required = False
             properties.append(PropertySpec(name=name, schema=schema, required=is_required))
 
-        properties.extend(self._added_properties(frame, raw_properties))
+        added = {prop.name: prop for prop in self._added_properties(frame, raw_properties)}
+        required_undeclared: list[str] = []
+        for name in undeclared:
+            if self._relaxed_undeclared(frame, name):
+                continue
+            if name in added:
+                # Спецификация требует ключ, waiver дал ему схему — ключ обязателен.
+                added[name] = PropertySpec(name=name, schema=added[name].schema, required=True)
+            else:
+                required_undeclared.append(name)
+        properties.extend(added.values())
 
         additional = self._normalize_additional(frame, node)
         return ObjectNode(
@@ -930,6 +1111,8 @@ class SchemaNormalizer:
             max_properties=self._int_bound(
                 frame, node.get("maxProperties"), keyword="maxProperties"
             ),
+            required_undeclared=tuple(required_undeclared),
+            pruned=tuple(pruned),
         )
 
     def _relaxed_required(self, frame: _Frame, name: str, raw_property: Any) -> bool:
@@ -940,6 +1123,25 @@ class SchemaNormalizer:
             base=frame.base,
             origin=frame.origin.child("properties", name),
             source_digest=semantic_source_digest(raw_property),
+        )
+        return waiver is not None
+
+    def _relaxed_undeclared(self, frame: _Frame, name: str) -> bool:
+        """``relax_required`` для обязательного ключа, которого нет в ``properties``.
+
+        Путь waiver'а тот же, что был бы у свойства; исходного фрагмента у ключа
+        нет, поэтому отпечаток — как у отсутствующего значения.
+        """
+        status, content_type = self._variant
+        waiver = self._waivers.consult(
+            operation=self._operation_key,
+            direction=self._direction,
+            path=(*frame.path, name),
+            rule=WaiverRule.RELAX_REQUIRED,
+            source_digest=semantic_source_digest(None),
+            status=status,
+            content_type=content_type,
+            subtree_digest=self._subtree_digest,
         )
         return waiver is not None
 
@@ -1083,6 +1285,20 @@ class SchemaNormalizer:
         pattern = node.get("pattern")
         if pattern is not None and not isinstance(pattern, str):
             self._fail(frame, "pattern должен быть строкой")
+        if pattern is not None:
+            try:
+                re.compile(pattern)
+            except re.error as error:
+                # JSON Schema контракта проверяет jsonschema на Python re, и d42 тоже:
+                # непонятый паттерн уронил бы validate_* и моки уже в тестах.
+                self._fail(
+                    frame,
+                    f"pattern {pattern!r} не разбирается регулярными выражениями Python "
+                    f"({error}): вероятно, это синтаксис ECMA/Java вроде \\p{{Lu}}. "
+                    f"Перепишите паттерн (например, [A-Z] вместо \\p{{Lu}}) либо оформите "
+                    f"waiver",
+                    waivable=WaiverRule.ALLOW_ANY,
+                )
         return StringNode(
             origin=frame.origin,
             format=self._check_format(frame, node, "string"),

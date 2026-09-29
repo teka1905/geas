@@ -22,10 +22,15 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
+import d42
 import pytest
 
+from geas import Direction
 from geas.contracts import BuiltOperation
 from geas.errors import RefResolutionError, UnsupportedConstructError
+from geas.integrations.d42 import to_d42
+from geas.models import Origin, RefNode
+from geas.runtime.validation import json_schema_validator
 from support import Project, make_project, spec
 
 #: Каркас операции, у которой единственный ответ описан схемой из теста.
@@ -388,6 +393,14 @@ def test_unmergeable_all_of_stays_a_composition(tmp_path: Path) -> None:
     assert schema["allOf"][0]["properties"]["size"] == {"type": "integer"}
     assert schema["allOf"][1]["properties"]["size"] == {"type": "string"}
 
+    # Несовместимый allOf по-прежнему не получает d42: пересечение пусто.
+    project.update()
+    section = project.contract_document("api__probe")["d42"]
+    assert section["response_module"] is None
+    assert "allOf не допускает ни одного значения" in section["response_reason"]
+    reason = section["response_reason"]
+    assert "обязательное свойство 'size': типы integer и string несовместимы" in reason
+
 
 def test_all_of_with_siblings_keeps_both_parts(tmp_path: Path) -> None:
     """Локальная часть рядом с ``allOf`` не вытесняется композицией и наоборот."""
@@ -400,6 +413,19 @@ def test_all_of_with_siblings_keeps_both_parts(tmp_path: Path) -> None:
     assert local["properties"]["id"] == {"type": "string", "format": "uuid"}
     assert sorted(composed["properties"]) == ["createdAt", "updatedAt"]
 
+    # JSON Schema хранит композицию, d42 — её пересечение: один открытый словарь.
+    project.update()
+    with project.importable() as generated:
+        d42_schema = generated.operations.api.probe.d42_schema(Direction.RESPONSE)
+    assert d42_schema == d42.schema.dict(
+        {
+            d42.optional("createdAt"): d42.schema.str,
+            "id": d42.schema.str,
+            d42.optional("updatedAt"): d42.schema.str,
+            ...: ...,
+        }
+    )
+
 
 def test_one_of_with_siblings_keeps_both_parts(tmp_path: Path) -> None:
     """``oneOf`` рядом с собственными свойствами даёт пересечение локального и союза."""
@@ -410,6 +436,15 @@ def test_one_of_with_siblings_keeps_both_parts(tmp_path: Path) -> None:
     local, composed = schema["allOf"]
     assert local["required"] == ["kind"]
     assert composed["oneOf"] == [{"$ref": "#/$defs/TextBlock"}, {"$ref": "#/$defs/ImageBlock"}]
+
+    # d42 распределяет пересечение по вариантам: kind базы есть в каждой ветке.
+    project.update()
+    with project.importable() as generated:
+        d42_schema = generated.operations.api.probe.d42_schema(Direction.RESPONSE)
+    assert d42_schema == d42.schema.any(
+        d42.schema.dict({"kind": d42.schema.str, "text": d42.schema.str, ...: ...}),
+        d42.schema.dict({"kind": d42.schema.str, "url": d42.schema.str, ...: ...}),
+    )
 
 
 def test_any_of_is_not_downgraded(tmp_path: Path) -> None:
@@ -812,6 +847,39 @@ def test_numeric_exclusive_minimum_is_rejected(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "schema",
+    [
+        pytest.param("{type: string, pattern: '^\\p{Lu}+$'}", id="pattern"),
+        pytest.param("{type: string, pattern: '^\\p{Lu}+$', enum: [ABC]}", id="pattern-and-enum"),
+    ],
+)
+def test_pattern_python_cannot_compile_is_rejected(tmp_path: Path, schema: str) -> None:
+    """ECMA/Java-паттерн вроде ``\\p{Lu}`` Python ``re`` не разбирает.
+
+    JSON Schema контракта проверяется библиотекой ``jsonschema`` на Python ``re``:
+    раньше ``geas update`` проходил (или падал сырым ``re.error`` при ``enum``), а
+    ``validate_*`` и моки падали ``re.error`` уже в тестах потребителя.
+    """
+    with pytest.raises(UnsupportedConstructError, match="не разбирается") as info:
+        build_response(
+            tmp_path,
+            f"""
+            type: object
+            properties:
+              code: {schema}
+            """,
+        )
+
+    assert "rule: allow_any" in str(info.value)
+    assert_coordinates(
+        info.value,
+        operation_key="main.getProbe",
+        direction="response",
+        pointer_suffix="/schema/properties/code",
+    )
+
+
 def test_rejection_message_carries_a_ready_made_waiver(tmp_path: Path) -> None:
     """Сообщение об ошибке содержит готовый черновик waiver с contract path и отпечатком."""
     project = fixture_project(tmp_path, "unsupported_keywords.yaml", "getConst")
@@ -874,20 +942,11 @@ def test_semantic_sibling_of_ref_is_rejected(tmp_path: Path) -> None:
     assert "minLength" in str(info.value)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Дефект normalization/schemas.py: у объекта без 'properties' список 'required' "
-        "молча теряется вместо fail closed"
-    ),
-)
 def test_required_without_properties_is_not_silently_dropped(tmp_path: Path) -> None:
-    """``required`` без ``properties`` — знаемое ограничение, терять его нельзя.
+    """``required`` без ``properties`` сохраняется: ключ обязан быть, значение — любое.
 
-    Проверка `dangling` в ``_normalize_object`` выключена, когда ``properties``
-    пуст, поэтому ``{"type": "object", "required": ["ghost"]}`` превращается в
-    объект вообще без ограничений. Это молчаливая потеря контракта: fail closed
-    требует либо сохранить требование, либо отказаться его разбирать.
+    Раньше ``{"type": "object", "required": ["ghost"]}`` превращался в объект
+    вообще без ограничений. Теперь ключ — ``ObjectNode.required_undeclared``.
     """
     built = build_response(
         tmp_path,
@@ -898,6 +957,172 @@ def test_required_without_properties_is_not_silently_dropped(tmp_path: Path) -> 
     )
 
     assert response_schema(built).get("required") == ["ghost"]
+
+
+def test_required_next_to_a_composition_may_name_keys_declared_elsewhere(tmp_path: Path) -> None:
+    """Наследование springdoc: локальная часть требует ключ, схему даёт часть ``allOf``."""
+    built = build_response(
+        tmp_path,
+        """
+        type: object
+        required: [caption, text]
+        properties:
+          text: {type: string}
+        allOf:
+          - type: object
+            properties:
+              caption: {type: string}
+        """,
+    )
+
+    local, composed = response_schema(built)["allOf"]
+    assert local["required"] == ["caption", "text"]
+    assert list(local["properties"]) == ["text"]
+    assert composed["properties"] == {"caption": {"type": "string"}}
+
+
+def test_required_naming_an_undeclared_key_of_a_plain_object_is_rejected(tmp_path: Path) -> None:
+    """Без композиции ключ из ``required``, которого нет в ``properties``, — опечатка."""
+    with pytest.raises(UnsupportedConstructError, match=r"отсутствующие свойства \['caption'\]"):
+        build_response(
+            tmp_path,
+            """
+            type: object
+            required: [caption]
+            properties:
+              text: {type: string}
+            """,
+        )
+
+
+def test_required_key_forbidden_by_additional_properties_is_rejected(tmp_path: Path) -> None:
+    """``additionalProperties: false`` запрещает ключ, который ``required`` требует: контракт пуст."""
+    with pytest.raises(UnsupportedConstructError, match="additionalProperties: false"):
+        build_response(
+            tmp_path,
+            """
+            type: object
+            additionalProperties: false
+            required: [caption]
+            allOf:
+              - type: object
+                properties:
+                  caption: {type: string}
+            """,
+        )
+
+
+def test_merged_all_of_turns_a_required_key_into_a_required_property(tmp_path: Path) -> None:
+    built = build_response(
+        tmp_path,
+        """
+        allOf:
+          - type: object
+            required: [caption]
+          - type: object
+            properties:
+              caption: {type: string}
+        """,
+    )
+
+    schema = response_schema(built)
+    assert "allOf" not in schema
+    assert schema["required"] == ["caption"]
+    assert schema["properties"] == {"caption": {"type": "string"}}
+
+
+#: Наследник требует поля базы, часть которых направленные: ``id`` приходит только в
+#: ответе, ``password`` уходит только в запросе.
+_DIRECTED_HEIR = """
+openapi: "3.0.3"
+info: {{title: Directed heir, version: "1.0.0"}}
+paths:
+  /users:
+    post:
+      operationId: createUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/User"
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+components:
+  schemas:
+    Base:
+      type: object
+      properties:
+        id: {{type: string, readOnly: true}}
+        name: {{type: string}}
+        password: {{type: string, writeOnly: true}}
+    User:
+{user}
+"""
+
+
+@pytest.mark.parametrize(
+    "user",
+    [
+        pytest.param(
+            """
+            type: object
+            required: [id, name, password]
+            allOf:
+              - $ref: "#/components/schemas/Base"
+            """,
+            id="required-next-to-allOf",
+        ),
+        pytest.param(
+            """
+            allOf:
+              - $ref: "#/components/schemas/Base"
+              - type: object
+                required: [id, name, password]
+            """,
+            id="required-as-allOf-part",
+        ),
+    ],
+)
+def test_heir_does_not_require_a_key_its_direction_pruned(tmp_path: Path, user: str) -> None:
+    """``required`` на ``readOnly``-поле действует только в ответе, на ``writeOnly`` — в запросе.
+
+    Внутри одного объекта это правило работало всегда. У наследника ``required``
+    стоит в другой части ``allOf``, чем свойство, и без учёта направления поле
+    становилось обязательным ключом без схемы: мок отклонял законный запрос без
+    ``id`` и законный ответ без ``password``.
+    """
+    text = _DIRECTED_HEIR.format(user=textwrap.indent(textwrap.dedent(user).strip("\n"), " " * 6))
+    built = build_source(tmp_path, text).by_key("main.createUser")
+    user_ref = RefNode(origin=Origin(source="", pointer=""), name="User")
+
+    for schema, definitions, valid, invalid in (
+        (
+            built.document["request"]["bodies"][0]["schema"],
+            dict(built.request_definitions),
+            {"name": "a", "password": "p"},
+            {"name": "a"},
+        ),
+        (
+            built.document["responses"][0]["schema"],
+            dict(built.response_definitions),
+            {"id": "1", "name": "a"},
+            {"name": "a"},
+        ),
+    ):
+        validator = json_schema_validator(schema)
+        converted = to_d42(user_ref, definitions)
+        assert validator.is_valid(valid), list(validator.iter_errors(valid))
+        d42.validate_or_fail(converted, valid)
+        # Ненаправленное обязательное поле по-прежнему обязательно.
+        assert not validator.is_valid(invalid)
+        with pytest.raises(d42.ValidationException):
+            d42.validate_or_fail(converted, invalid)
 
 
 # ---------------------------------------------------------- направления

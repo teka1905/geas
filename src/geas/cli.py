@@ -552,6 +552,12 @@ def _cmd_update(args: argparse.Namespace) -> int:
             f"  {key} ({direction}): цикл отсечён на ссылке {owner} -> {target}; "
             f"этот узел d42 проверяет по JSON Schema"
         )
+    for key, direction, where, branch, reason in artifacts.d42_dropped_branches:
+        print(
+            f"  {key} ({direction}): ветка {branch} в allOf {where} выброшена из d42 — "
+            f"{reason}; по контракту она не допускает ни одного значения, проверьте "
+            f"спецификацию"
+        )
     return EXIT_OK
 
 

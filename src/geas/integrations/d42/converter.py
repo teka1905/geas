@@ -42,10 +42,35 @@ JSON-Schema-проверке. Единственный побочный эффе
 не проверяет, а подделывать проверку строкой-заглушкой значило бы соврать про
 контракт. ``format`` остаётся на JSON Schema.
 
+``required`` на ключ без схемы в ``properties`` (локальная часть наследования
+``{required: [argList], allOf: [...]}``) → обязательный ключ со значением
+``schema.any``, а при типизированном ``additionalProperties`` — с его схемой. Это
+**точно**: сам объект значение такого ключа больше ничем не ограничивает, а схему
+даёт пересечение с другой частью ``allOf``.
+
+``allOf`` → распределение по объединению — **точно**. У d42 нет пересечения
+типов, поэтому пересечение считается на уровне IR
+(:mod:`~geas.integrations.d42.intersection`) и распределяется по вариантам::
+
+    allOf(base, oneOf(V1, ..., Vn))  →  schema.any(base ∧ V1, ..., base ∧ Vn)
+
+Значение проходит ``base`` и хотя бы один вариант тогда и только тогда, когда оно
+проходит хотя бы одну ветку, — ничего не теряется и ничего не добавляется.
+Эксклюзивность ``oneOf`` и ``discriminator`` остаются на JSON-Schema-пути, как у
+любого ``oneOf`` выше. Ветка, равная своему варианту, остаётся ссылкой на его
+generated-схему; ветка, которая не допускает ни одного значения (``enum`` варианта
+вне ``enum`` базы), выбрасывается — это тоже точно, а ``geas update`` называет её
+как ошибку спецификации. Распределение идёт до отсечки цикла: ссылки внутри веток
+— обычные ``$ref``, и рекурсия через вариант отсекается общим механизмом. JSON
+Schema контракта ``allOf`` сохраняет как есть.
+
 Fail closed (список полный)
 ---------------------------
 
-* ``allOf`` — у d42 нет пересечения типов;
+* ``allOf``, пересечение которого не доказуемо (два разных ``pattern``,
+  ``multipleOf`` у ``number``, ``integer`` против ``number``, ключ, который в
+  открытом объекте обязан отсутствовать, ``allOf``, ссылающийся сам на себя) или
+  пусто целиком — сообщение называет ветку и contract path свойства;
 * ``exclusiveMinimum`` / ``exclusiveMaximum`` у ``number`` — вещественную границу
   «строго больше» нельзя выразить через ``min``/``max`` без потери точности
   (у ``integer`` то же самое разворачивается точно: ``N+1`` / ``N-1``);
@@ -57,6 +82,9 @@ Fail closed (список полный)
 * типизированный ``additionalProperties`` выражается через
   :class:`~geas.integrations.d42.typed_dict.TypedDictSchema`: обычный
   d42 ``schema.dict`` не умеет проверять значения динамических ключей;
+* ``pattern``, который регулярные выражения Python не разбирают (ECMA/Java
+  ``\\p{Lu}``): d42 его не проверит и не сгенерирует. Из спецификации такой паттерн
+  сюда не доходит — его отклоняет нормализация;
 * ``enum``, чьи литералы противоречат соседним ограничениям (``pattern``, границам,
   ``multipleOf``): противоречие разрешимо на этапе сборки, поэтому проверяется сразу.
 
@@ -121,10 +149,16 @@ from geas.paths import (
     variant_segment,
 )
 
+from .intersection import (
+    Empty,
+    IntersectionError,
+    MissingDefinitionError,
+    distribute,
+)
 from .recursion import RecursionContract
 from .typed_dict import typed_dict
 
-__all__ = ["cut_cycles", "to_d42"]
+__all__ = ["DroppedBranchNote", "cut_cycles", "to_d42"]
 
 
 class _NoLiteral:
@@ -196,6 +230,26 @@ _Plan = _Ref | _Cut | _Leaf | _DictPlan | _ListPlan | _UnionPlan
 #: План значения ``null``: выносится в константу, чтобы не плодить объекты.
 _NONE_PLAN = _Leaf(base="none")
 
+#: План «любое значение»: ключ, который ``required`` называет без схемы.
+_ANY_PLAN = _Leaf(base="any")
+
+
+@dataclass(frozen=True, slots=True)
+class DroppedBranchNote:
+    """Ветка ``allOf``, выброшенная из d42 как пустая: где, какая и почему.
+
+    ``where`` — contract path ``allOf`` (с именем определения), ``branch`` —
+    вариант объединения, ``reason`` — почему пересечение с остальными частями пусто.
+    """
+
+    where: str
+    branch: str
+    reason: str
+
+
+#: Сборщик выброшенных веток; ``None`` — не собирать.
+_Dropped = list[DroppedBranchNote] | None
+
 
 def to_d42(node: SchemaNode, definitions: Mapping[str, SchemaNode]) -> GenericSchema:
     """Собрать живую d42-схему для узла IR.
@@ -226,9 +280,14 @@ def plan_node(
     *,
     path: ContractPath = (),
     definition: str | None = None,
+    dropped: _Dropped = None,
 ) -> _Plan:
-    """Построить план для узла IR, не разворачивая ``$ref``."""
-    return _nullable(_plan_inner(node, definitions, path, definition), node)
+    """Построить план для узла IR, не разворачивая ``$ref``.
+
+    ``dropped``, если передан, получает ветки ``allOf``, выброшенные как пустые
+    (см. раздел «allOf» в докстринге модуля): план от него не зависит.
+    """
+    return _nullable(_plan_inner(node, definitions, path, definition, dropped), node)
 
 
 def plan_bundle(
@@ -444,6 +503,7 @@ def _plan_inner(
     definitions: Mapping[str, SchemaNode],
     path: ContractPath,
     definition: str | None,
+    dropped: _Dropped,
 ) -> _Plan:
     if isinstance(node, RefNode):
         if node.name not in definitions:
@@ -470,20 +530,13 @@ def _plan_inner(
     if isinstance(node, NumberNode):
         return _plan_number(node, path, definition)
     if isinstance(node, ArrayNode):
-        return _plan_array(node, definitions, path, definition)
+        return _plan_array(node, definitions, path, definition, dropped)
     if isinstance(node, ObjectNode):
-        return _plan_object(node, definitions, path, definition)
+        return _plan_object(node, definitions, path, definition, dropped)
     if isinstance(node, UnionNode):
-        return _plan_union(node, definitions, path, definition)
+        return _plan_union(node, definitions, path, definition, dropped)
     if isinstance(node, AllOfNode):
-        raise _error(
-            UnsupportedConstructError,
-            "allOf не выражается в d42: у языка нет пересечения типов. "
-            "Слейте части в один объект в спецификации либо оформите waiver",
-            node,
-            path,
-            definition,
-        )
+        return _plan_all_of(node, definitions, path, definition, dropped)
     raise _error(
         UnsupportedConstructError,
         f"неизвестный узел IR: {type(node).__name__}",
@@ -501,6 +554,20 @@ def _plan_boolean(node: BooleanNode, path: ContractPath, definition: str | None)
 
 
 def _plan_string(node: StringNode, path: ContractPath, definition: str | None) -> _Plan:
+    if node.pattern is not None:
+        try:
+            re.compile(node.pattern)
+        except re.error as error:
+            # Нормализация такой паттерн отклоняет; это защита для IR, собранного
+            # вручную: иначе re.error при enum и DeclarationError d42 без него.
+            raise _error(
+                UnsupportedConstructError,
+                f"pattern {node.pattern!r} не разбирается регулярными выражениями Python "
+                f"({error}): d42 его не проверит и не сгенерирует",
+                node,
+                path,
+                definition,
+            ) from None
     if node.enum is not None:
         _require_enum(node, node.enum, path, definition)
         for value in node.enum:
@@ -598,10 +665,13 @@ def _plan_array(
     definitions: Mapping[str, SchemaNode],
     path: ContractPath,
     definition: str | None,
+    dropped: _Dropped,
 ) -> _Plan:
     if node.min_items is not None and node.max_items is not None:
         _require_range(node, node.min_items, node.max_items, "minItems", path, definition)
-    items = plan_node(node.items, definitions, path=(*path, ARRAY_ITEMS), definition=definition)
+    items = plan_node(
+        node.items, definitions, path=(*path, ARRAY_ITEMS), definition=definition, dropped=dropped
+    )
     calls = _length_calls(node.min_items, node.max_items)
     if node.unique_items:
         # uniqueItems выражается точно: и валидатор, и генератор d42 его honor'ят.
@@ -614,6 +684,7 @@ def _plan_object(
     definitions: Mapping[str, SchemaNode],
     path: ContractPath,
     definition: str | None,
+    dropped: _Dropped,
 ) -> _Plan:
     for keyword, value in (
         ("minProperties", node.min_properties),
@@ -643,23 +714,52 @@ def _plan_object(
         entries.append(
             (
                 prop.name,
-                plan_node(prop.schema, definitions, path=(*path, prop.name), definition=definition),
+                plan_node(
+                    prop.schema,
+                    definitions,
+                    path=(*path, prop.name),
+                    definition=definition,
+                    dropped=dropped,
+                ),
                 not prop.required,
             )
         )
-    return _DictPlan(
-        entries=tuple(entries),
-        open=node.additional_properties is AdditionalProperties.ALLOWED,
-        additional=(
-            plan_node(
-                node.additional_properties,
-                definitions,
-                path=(*path, ADDITIONAL_PROPERTIES),
-                definition=definition,
+    additional = (
+        plan_node(
+            node.additional_properties,
+            definitions,
+            path=(*path, ADDITIONAL_PROPERTIES),
+            definition=definition,
+            dropped=dropped,
+        )
+        if isinstance(node.additional_properties, SchemaNode)
+        else None
+    )
+    for name in node.required_undeclared:
+        if name in seen:
+            raise _error(
+                UnsupportedConstructError,
+                f"ключ {name!r} одновременно объявлен свойством и обязательным без схемы",
+                node,
+                path,
+                definition,
             )
-            if isinstance(node.additional_properties, SchemaNode)
-            else None
-        ),
+        if node.additional_properties is AdditionalProperties.FORBIDDEN:
+            raise _error(
+                UnsupportedConstructError,
+                f"обязательный ключ {name!r} запрещён additionalProperties: false: "
+                f"такому объекту не соответствует ни одно значение",
+                node,
+                path,
+                definition,
+            )
+        # Ключ обязан быть, а значение ограничивает только additionalProperties:
+        # разрешены — любое значение (это и есть контракт), типизированы — их схема.
+        entries.append((name, additional if additional is not None else _ANY_PLAN, False))
+    return _DictPlan(
+        entries=tuple(sorted(entries, key=lambda entry: entry[0])),
+        open=node.additional_properties is AdditionalProperties.ALLOWED,
+        additional=additional,
     )
 
 
@@ -668,6 +768,7 @@ def _plan_union(
     definitions: Mapping[str, SchemaNode],
     path: ContractPath,
     definition: str | None,
+    dropped: _Dropped,
 ) -> _Plan:
     if not node.variants:
         raise _error(
@@ -680,10 +781,62 @@ def _plan_union(
     # oneOf и anyOf схлопываются в schema.any: эксклюзивность oneOf и discriminator
     # остаются на JSON-Schema-пути (см. докстринг модуля).
     variants = tuple(
-        plan_node(variant, definitions, path=(*path, variant_segment(index)), definition=definition)
+        plan_node(
+            variant,
+            definitions,
+            path=(*path, variant_segment(index)),
+            definition=definition,
+            dropped=dropped,
+        )
         for index, variant in enumerate(node.variants)
     )
     return _UnionPlan(variants=variants)
+
+
+def _plan_all_of(
+    node: AllOfNode,
+    definitions: Mapping[str, SchemaNode],
+    path: ContractPath,
+    definition: str | None,
+    dropped: _Dropped,
+) -> _Plan:
+    """Распределить ``allOf`` по объединению и спланировать результат как обычный узел.
+
+    Распределение идёт до :func:`cut_cycles`: ссылки внутри веток — обычные
+    ``RefNode``, и цикл через них отсекается тем же механизмом, что и любой другой.
+    """
+    try:
+        distribution = distribute(node, definitions, path=path)
+    except MissingDefinitionError as error:
+        raise _error(RefResolutionError, error.reason, error.node, error.path, definition) from None
+    except IntersectionError as error:
+        branch = f" ветки {error.branch}" if error.branch is not None else ""
+        raise _error(
+            UnsupportedConstructError,
+            f"allOf не выражается в d42: пересечение{branch} не доказуемо — {error.reason}. "
+            f"Слейте части в один объект в спецификации либо оформите waiver",
+            error.node,
+            error.path,
+            definition,
+        ) from None
+    if isinstance(distribution.node, Empty):
+        raise _error(
+            UnsupportedConstructError,
+            f"allOf не допускает ни одного значения: {distribution.node.reason}. "
+            f"Контракт противоречив — исправьте спецификацию либо оформите waiver",
+            node,
+            path,
+            definition,
+        )
+    if dropped is not None:
+        where = _where(path, definition)
+        dropped.extend(
+            DroppedBranchNote(where=where, branch=item.branch, reason=item.reason)
+            for item in distribution.dropped
+        )
+    return plan_node(
+        distribution.node, definitions, path=path, definition=definition, dropped=dropped
+    )
 
 
 def _nullable(plan: _Plan, node: SchemaNode) -> _Plan:
@@ -844,6 +997,12 @@ def _check_number_value(
         )
 
 
+def _where(path: ContractPath, definition: str | None) -> str:
+    """Contract path с именем определения: ``Имя:/путь``."""
+    where = format_contract_path(path)
+    return where if definition is None else f"{definition}:{where}"
+
+
 def _error(
     error_type: type[Exception],
     message: str,
@@ -852,11 +1011,8 @@ def _error(
     definition: str | None,
 ) -> Exception:
     """Собрать ошибку с contract path и координатами узла."""
-    where = format_contract_path(path)
-    if definition is not None:
-        where = f"{definition}:{where}"
     return error_type(  # type: ignore[call-arg]
-        f"{message} [contract path {where}]",
+        f"{message} [contract path {_where(path, definition)}]",
         source=node.origin.source or None,
         json_pointer=node.origin.pointer or None,
     )

@@ -22,6 +22,7 @@ from geas.errors import (
     ContractError,
     ManifestError,
     UnsupportedConstructError,
+    ValidationFailedError,
     WaiverError,
 )
 from geas.fingerprints import semantic_source_digest
@@ -265,6 +266,50 @@ def test_copy_pasted_stanza_unblocks_generation(tmp_path: Path) -> None:
     # Точка, накрытая waiver'ом, становится «любым значением» — и только она.
     schema = document["responses"][0]["schema"]
     assert schema["properties"] == {"payload": {}}
+
+
+#: Паттерн в синтаксисе ECMA/Java, который Python ``re`` не разбирает.
+ECMA_PATTERN = """openapi: "3.0.3"
+info: {title: ECMA pattern, version: "1.0.0"}
+paths:
+  /codes:
+    get:
+      operationId: getCode
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code]
+                properties:
+                  code:
+                    type: string
+                    pattern: '^\\p{Lu}+$'
+"""
+
+
+def test_waiver_on_an_unparseable_pattern_makes_mocks_usable(tmp_path: Path) -> None:
+    """Ошибка → waiver ``allow_any`` → генерация и проверка тела работают без ``re.error``."""
+    project = build_project(
+        tmp_path / "project",
+        source=ECMA_PATTERN,
+        operations={"api.getCode": {"source": "main", "operation_id": "getCode"}},
+    )
+    with pytest.raises(UnsupportedConstructError, match="не разбирается") as info:
+        project.build()
+    stanza = parse_stanza(str(info.value))
+    stanza.update(reason="бэкенд пишет паттерны для Java", owner="team-codes", issue="ISSUE-7")
+    project.write_waivers([{**stanza, "expires_at": in_days(30)}])
+
+    project.update()
+
+    with project.importable() as generated:
+        handle = generated.operations.api.get_code
+        handle.validate_response({"code": "ABC"}, status=200)
+        with pytest.raises(ValidationFailedError, match="code"):
+            handle.validate_response({}, status=200)
 
 
 def test_waiver_narrowed_to_another_variant_does_not_apply(tmp_path: Path) -> None:
@@ -1175,3 +1220,69 @@ def test_path_parameter_is_never_relaxed(tmp_path: Path) -> None:
 
     with pytest.raises(WaiverError, match="больше не нужны"):
         project.build()
+
+
+UNDECLARED_REQUIRED = """openapi: "3.0.3"
+info:
+  title: Undeclared required fixture
+  version: "1.0.0"
+paths:
+  /cards:
+    get:
+      operationId: getCard
+      responses:
+        "200":
+          description: Карточка, наследующая id из общей части
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, note]
+                allOf:
+                  - type: object
+                    properties:
+                      id:
+                        type: string
+"""
+
+
+def undeclared_required_project(root: Path) -> Project:
+    return build_project(
+        root,
+        source=UNDECLARED_REQUIRED,
+        operations={"api.getCard": {"source": "main", "operation_id": "getCard"}},
+    )
+
+
+def card_waiver(**overrides: Any) -> dict[str, Any]:
+    defaults: dict[str, Any] = {
+        "operation": "api.getCard",
+        "json_pointer": "/body/note",
+        "rule": "relax_required",
+        "expected_source": semantic_source_digest(None),
+    }
+    return waiver(**{**defaults, **overrides})
+
+
+def test_relax_required_applies_to_a_required_key_without_schema(tmp_path: Path) -> None:
+    """Ключ из ``required`` без схемы ослабляется тем же путём, что и свойство."""
+    project = undeclared_required_project(tmp_path / "project")
+    project.write_waivers([card_waiver()])
+
+    schema = project.build().by_key("api.getCard").document["responses"][0]["schema"]
+
+    assert schema["allOf"][0] == {"required": ["id"], "type": "object"}
+
+
+def test_add_property_gives_a_required_key_its_schema(tmp_path: Path) -> None:
+    """Спецификация требует ключ, waiver даёт ему схему — свойство обязательное."""
+    project = undeclared_required_project(tmp_path / "project")
+    project.write_waivers(
+        [card_waiver(rule="add_property", replacement={"type": "string", "maxLength": 80})]
+    )
+
+    schema = project.build().by_key("api.getCard").document["responses"][0]["schema"]
+
+    local = schema["allOf"][0]
+    assert local["properties"] == {"note": {"type": "string", "maxLength": 80}}
+    assert local["required"] == ["id", "note"]

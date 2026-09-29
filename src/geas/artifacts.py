@@ -89,6 +89,9 @@ class ArtifactSet:
     d42_disabled: tuple[tuple[str, str], ...] = ()
     #: Где отсечены циклы: ``(операция, направление, определение, цель ссылки)``.
     d42_cycle_cuts: tuple[tuple[str, str, str, str], ...] = ()
+    #: Ветки ``allOf``, выброшенные из d42 как пустые:
+    #: ``(операция, направление, contract path allOf, ветка, причина)``.
+    d42_dropped_branches: tuple[tuple[str, str, str, str, str], ...] = ()
 
     def paths(self) -> tuple[str, ...]:
         """Owned-пути в стабильном порядке."""
@@ -137,7 +140,7 @@ def render_artifacts(manifest: Manifest, result: BuildResult) -> ArtifactSet:
 
     # d42 рендерится первым: его отказ не должен ронять операцию целиком, но обязан
     # быть записан в документ контракта до того, как документ попадёт в артефакт.
-    d42_files, d42_disabled, cycle_cuts = _render_d42_modules(result)
+    d42_files, d42_disabled, cycle_cuts, dropped = _render_d42_modules(result)
 
     for built in result.operations:
         document = _document_with_d42_status(built, d42_disabled.get(built.contract.key, {}))
@@ -180,6 +183,7 @@ def render_artifacts(manifest: Manifest, result: BuildResult) -> ArtifactSet:
             (key, _describe_reasons(reasons)) for key, reasons in sorted(d42_disabled.items())
         ),
         d42_cycle_cuts=tuple(sorted(cycle_cuts)),
+        d42_dropped_branches=tuple(sorted(dropped)),
     )
 
 
@@ -187,9 +191,9 @@ def _document_with_d42_status(built: Any, reasons: Mapping[str, str]) -> dict[st
     """Документ контракта с учётом того, удалось ли отрендерить d42.
 
     Конструкция может быть точно выразима контрактом и JSON Schema, но не
-    выразима в d42 (пересечение ``allOf``, ``multipleOf``). Ронять из-за этого
-    всю операцию неправильно: ядро не обязано зависеть от опциональной
-    интеграции. Поэтому d42 отключается **точечно и по направлениям**: запрос
+    выразима в d42 (``multipleOf``, недоказуемое пересечение ``allOf``). Ронять
+    из-за этого всю операцию неправильно: ядро не обязано зависеть от
+    опциональной интеграции. Поэтому d42 отключается **точечно и по направлениям**: запрос
     не теряет d42 из-за ответа и наоборот. Причина записывается в артефакт
     (``<direction>_reason`` и сводная ``reason``) и всплывает в ``update``, а
     обращение к отсутствующей d42-схеме падает с этой же причиной.
@@ -237,7 +241,12 @@ def _json_text(payload: Any) -> str:
 
 def _render_d42_modules(
     result: BuildResult,
-) -> tuple[list[Artifact], dict[str, dict[str, str]], list[tuple[str, str, str, str]]]:
+) -> tuple[
+    list[Artifact],
+    dict[str, dict[str, str]],
+    list[tuple[str, str, str, str]],
+    list[tuple[str, str, str, str, str]],
+]:
     """Отрендерить d42-модули, отключая d42 точечно там, где он невыразим.
 
     Рендер опирается на тот же «план» схемы, что и построение живого объекта d42,
@@ -250,17 +259,19 @@ def _render_d42_modules(
     независимы — отказ d42 в ответе не отнимает d42 у запроса.
 
     Рекурсия d42 не отключает: цикл отсекается, и места отсечки возвращаются
-    третьим элементом для отчёта ``geas update``.
+    третьим элементом для отчёта ``geas update``. Четвёртый — ветки ``allOf``,
+    которые распределение выбросило как пустые (они не допускают ни одного значения
+    ещё в контракте).
     """
     needed = [
         built for built in result.operations if (built.document.get("d42") or {}).get("enabled")
     ]
     if not needed:
-        return [], {}, []
+        return [], {}, [], []
     from .errors import MissingExtraError
 
     try:
-        from .integrations.d42.renderer import cycle_cuts, render_module
+        from .integrations.d42.renderer import module_notes, render_module
     except MissingExtraError:
         # Интеграция сама объяснила, чего не хватает (например, d42 слишком старая).
         raise
@@ -273,6 +284,7 @@ def _render_d42_modules(
     files: list[Artifact] = []
     disabled: dict[str, dict[str, str]] = {}
     cuts: list[tuple[str, str, str, str]] = []
+    dropped: list[tuple[str, str, str, str, str]] = []
     for built in needed:
         section = built.document["d42"]
         for direction, definitions, roots in (
@@ -293,12 +305,16 @@ def _render_d42_modules(
                     exports={name: node for name, node in exports.items() if name not in names},
                     roots=roots,
                 )
-                edges = cycle_cuts(definitions=dict(definitions), roots=roots)
+                notes = module_notes(definitions=dict(definitions), roots=roots)
             except UnsupportedConstructError as error:
                 disabled.setdefault(built.contract.key, {})[direction] = error.base_message
                 continue
             files.append(Artifact(path=f"_d42/{module}.py", content=content))
-            cuts.extend((built.contract.key, direction, owner, target) for owner, target in edges)
+            key = built.contract.key
+            cuts.extend((key, direction, owner, target) for owner, target in notes.cuts)
+            dropped.extend(
+                (key, direction, note.where, note.branch, note.reason) for note in notes.dropped
+            )
 
     if files:
         files.append(
@@ -310,7 +326,7 @@ def _render_d42_modules(
                 ),
             )
         )
-    return files, disabled, cuts
+    return files, disabled, cuts, dropped
 
 
 def _d42_roots(built: Any, direction: str) -> list[Any]:

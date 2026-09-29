@@ -29,6 +29,7 @@ from geas.errors import (
     UnsupportedConstructError,
 )
 from geas.integrations.d42.converter import to_d42
+from geas.integrations.d42.typed_dict import typed_dict
 from geas.models import (
     AdditionalProperties,
     AllOfNode,
@@ -414,7 +415,40 @@ def test_missing_definition_is_a_ref_resolution_error() -> None:
 # ==================================================================== fail closed
 
 
-def test_all_of_fails_closed() -> None:
+def test_required_key_without_schema_accepts_any_value() -> None:
+    """``required`` без схемы: ключ обязан быть, значение ограничивает только ``additionalProperties``."""
+    node = ObjectNode(
+        origin=ORIGIN,
+        properties=(prop("id", StringNode(origin=ORIGIN)),),
+        required_undeclared=("note",),
+    )
+
+    assert to_d42(node, {}) == schema.dict({"id": schema.str, "note": schema.any, ...: ...})
+
+
+def test_required_key_without_schema_takes_the_additional_properties_schema() -> None:
+    node = ObjectNode(
+        origin=ORIGIN,
+        additional_properties=IntegerNode(origin=ORIGIN),
+        required_undeclared=("count",),
+    )
+
+    assert to_d42(node, {}) == typed_dict(schema.dict({"count": schema.int}), additional=schema.int)
+
+
+def test_required_key_forbidden_by_additional_properties_fails_closed() -> None:
+    node = ObjectNode(
+        origin=ORIGIN,
+        additional_properties=AdditionalProperties.FORBIDDEN,
+        required_undeclared=("note",),
+    )
+
+    with pytest.raises(UnsupportedConstructError, match="запрещён additionalProperties: false"):
+        to_d42(node, {})
+
+
+def test_compatible_all_of_is_intersected() -> None:
+    """``allOf`` доказуемо совместимых объектов — один словарь (правила — ``test_d42_intersection``)."""
     node = AllOfNode(
         origin=ORIGIN,
         parts=(
@@ -422,11 +456,41 @@ def test_all_of_fails_closed() -> None:
             obj(prop("b", StringNode(origin=ORIGIN))),
         ),
     )
+
+    assert to_d42(node, {}) == schema.dict({"a": schema.str, "b": schema.str, ...: ...})
+
+
+def test_contradicting_all_of_fails_closed() -> None:
+    """Пересечение без единого значения — отказ с причиной, а не пустая схема."""
+    node = AllOfNode(
+        origin=ORIGIN,
+        parts=(
+            obj(prop("a", StringNode(origin=ORIGIN))),
+            obj(prop("a", IntegerNode(origin=ORIGIN))),
+        ),
+    )
     with pytest.raises(UnsupportedConstructError) as info:
         to_d42(node, {})
 
-    assert "allOf" in str(info.value)
-    assert "пересечения типов" in str(info.value)
+    message = str(info.value)
+    assert "allOf не допускает ни одного значения" in message
+    assert "свойство 'a': типы string и integer несовместимы" in message
+    assert "[contract path /]" in message
+
+
+def test_unprovable_all_of_fails_closed() -> None:
+    node = AllOfNode(
+        origin=ORIGIN,
+        parts=(
+            obj(prop("a", StringNode(origin=ORIGIN, pattern="^x"))),
+            obj(prop("a", StringNode(origin=ORIGIN, pattern="y$"))),
+        ),
+    )
+    with pytest.raises(UnsupportedConstructError) as info:
+        to_d42(node, {})
+
+    assert "allOf не выражается в d42" in str(info.value)
+    assert "[contract path /a]" in str(info.value)
 
 
 @pytest.mark.parametrize(
@@ -602,6 +666,25 @@ def test_enum_value_conflicting_with_pattern_fails_closed() -> None:
         to_d42(node, {})
 
     assert "не соответствует pattern" in str(info.value)
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        pytest.param(StringNode(origin=ORIGIN, pattern=r"^\p{Lu}+$"), id="pattern"),
+        pytest.param(
+            StringNode(origin=ORIGIN, pattern=r"^\p{Lu}+$", enum=("ABC",)), id="pattern-and-enum"
+        ),
+    ],
+)
+def test_pattern_python_cannot_compile_fails_closed(node: StringNode) -> None:
+    """Нормализация такой паттерн не пропускает; IR, собранный вручную, тоже не роняет d42.
+
+    Раньше ``enum`` ронял конвертер сырым ``re.error``, а без ``enum`` модуль
+    рендерился, но d42 падал ``DeclarationError`` при сборке схемы.
+    """
+    with pytest.raises(UnsupportedConstructError, match="не разбирается"):
+        to_d42(node, {})
 
 
 @pytest.mark.parametrize(

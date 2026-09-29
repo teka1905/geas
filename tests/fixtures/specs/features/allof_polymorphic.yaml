@@ -1,0 +1,229 @@
+# Полиморфные DTO в стиле springdoc: у схемы одновременно properties, oneOf и
+# discriminator. Нормализатор держит их как allOf(база, oneOf), d42 получает
+# распределённое объединение any(база ∧ вариант).
+#
+# Block — всё сразу: вариант, равный своему пересечению (TextBlock), вариант без
+# свойств базы (ImageBlock), рекурсия через вариант (ListBlock), пустой открытый
+# объект в базе против конкретного у варианта (meta) и ссылка базы на
+# полиморфный DTO против его варианта (style). PinnedBlock наследует Block через
+# allOf: [$ref]. CaptionedBlock — наследование, у которого required называет
+# ключ без схемы в своей части (её задаёт другая часть allOf). У Reaction ветка
+# Heart пуста по самому контракту, у Stamp пересечение ветки не доказуемо (два
+# разных pattern).
+openapi: "3.0.3"
+
+info:
+  title: Polymorphic allOf fixture
+  version: "1.0.0"
+
+paths:
+  /blocks:
+    get:
+      operationId: getBlock
+      responses:
+        "200":
+          description: Блок документа
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Block"
+  /blocks/pinned:
+    post:
+      operationId: pinBlock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PinnedBlock"
+      responses:
+        "200":
+          description: Закреплённый блок
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PinnedBlock"
+  /blocks/captioned:
+    post:
+      operationId: captionBlock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CaptionedBlock"
+      responses:
+        "204":
+          description: Подпись сохранена
+  /reactions:
+    post:
+      operationId: addReaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Reaction"
+      responses:
+        "204":
+          description: Реакция сохранена
+  /stamps:
+    post:
+      operationId: stampDocument
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Stamp"
+      responses:
+        "200":
+          description: Реакция на штамп
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Reaction"
+
+components:
+  schemas:
+    Block:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [TEXT, IMAGE, LIST]
+        meta:
+          $ref: "#/components/schemas/BlockMeta"
+        style:
+          $ref: "#/components/schemas/Style"
+      discriminator:
+        propertyName: kind
+      oneOf:
+        - $ref: "#/components/schemas/TextBlock"
+        - $ref: "#/components/schemas/ImageBlock"
+        - $ref: "#/components/schemas/ListBlock"
+    BlockMeta:
+      type: object
+    TextBlock:
+      type: object
+      required: [kind, text]
+      properties:
+        kind:
+          type: string
+          enum: [TEXT]
+        text:
+          type: string
+          minLength: 1
+        meta:
+          $ref: "#/components/schemas/TextMeta"
+        style:
+          $ref: "#/components/schemas/PlainStyle"
+    TextMeta:
+      type: object
+      properties:
+        wordCount:
+          type: integer
+          minimum: 0
+    ImageBlock:
+      type: object
+      required: [kind, url]
+      properties:
+        kind:
+          type: string
+          enum: [IMAGE]
+        url:
+          type: string
+          format: uri
+    ListBlock:
+      type: object
+      required: [kind, items]
+      properties:
+        kind:
+          type: string
+          enum: [LIST]
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Block"
+        meta:
+          $ref: "#/components/schemas/BlockMeta"
+        style:
+          $ref: "#/components/schemas/Style"
+    Style:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+      discriminator:
+        propertyName: name
+      oneOf:
+        - $ref: "#/components/schemas/PlainStyle"
+    PlainStyle:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          enum: [plain]
+        color:
+          type: string
+    PinnedBlock:
+      type: object
+      required: [kind]
+      allOf:
+        - $ref: "#/components/schemas/Block"
+    CaptionedBlock:
+      type: object
+      required: [caption, kind]
+      allOf:
+        - $ref: "#/components/schemas/Block"
+        - type: object
+          properties:
+            caption:
+              type: string
+    Reaction:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [LIKE, DISLIKE]
+      discriminator:
+        propertyName: kind
+      oneOf:
+        - $ref: "#/components/schemas/Like"
+        - $ref: "#/components/schemas/Heart"
+    Like:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [LIKE]
+        member:
+          type: string
+    Heart:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [HEART]
+    Stamp:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          pattern: "^[A-Z]+$"
+      oneOf:
+        - $ref: "#/components/schemas/DigitStamp"
+    DigitStamp:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          pattern: "^[0-9]+$"

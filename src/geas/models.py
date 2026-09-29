@@ -198,17 +198,33 @@ class ObjectNode(SchemaNode):
     """``type: object``.
 
     ``properties`` всегда отсортированы по имени — это часть детерминизма артефактов.
+
+    ``required_undeclared`` — обязательные ключи, которых нет в ``properties`` этого
+    объекта (отсортированы). Так выглядит локальная часть наследования в стиле
+    springdoc: ``{type: object, required: [argList], allOf: [...]}`` — ключ обязан
+    быть, а его схему задаёт другая часть ``allOf``. Сам объект значение такого
+    ключа ограничивает только своими ``additionalProperties``.
+
+    ``pruned`` — свойства спецификации, которые направление исключило
+    (``readOnly`` в запросе, ``writeOnly`` в ответе), отсортированы. Контракт они не
+    меняют и в равенстве узлов не участвуют: по ним соседняя часть ``allOf`` узнаёт,
+    что её ``required`` на такой ключ действует только в другом направлении.
     """
 
     properties: tuple[PropertySpec, ...] = ()
     additional_properties: AdditionalProperties | SchemaNode = AdditionalProperties.ALLOWED
     min_properties: int | None = None
     max_properties: int | None = None
+    required_undeclared: tuple[str, ...] = ()
+    pruned: tuple[str, ...] = field(default=(), compare=False)
 
     @property
     def required_names(self) -> tuple[str, ...]:
-        """Имена обязательных свойств в стабильном порядке."""
-        return tuple(prop.name for prop in self.properties if prop.required)
+        """Имена всех обязательных ключей, объявленных и нет, в стабильном порядке."""
+        declared = [prop.name for prop in self.properties if prop.required]
+        if not self.required_undeclared:
+            return tuple(declared)
+        return tuple(sorted([*declared, *self.required_undeclared]))
 
     def property(self, name: str) -> PropertySpec | None:
         """Найти свойство по имени."""
@@ -255,9 +271,9 @@ class UnionNode(SchemaNode):
 class AllOfNode(SchemaNode):
     """``allOf``, который не удалось доказуемо слить в один объект.
 
-    Композиция сохраняется точно. JSON Schema отдаёт её как ``allOf``; d42
-    отказывается генерировать такую схему (fail closed), потому что не умеет
-    выражать пересечение.
+    Композиция сохраняется точно. JSON Schema отдаёт её как ``allOf``; d42-путь
+    распределяет пересечение по объединениям частей, а недоказуемое пересечение
+    отклоняет (fail closed) — см. :mod:`geas.integrations.d42.intersection`.
     """
 
     parts: tuple[SchemaNode, ...]

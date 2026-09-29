@@ -269,6 +269,12 @@ class _SchemaTree:
                     continue
                 requirement = "required" if str(name) in required else "optional"
                 entries.append(_Entry(label=str(name), schema=value, requirement=requirement))
+        if _is_object(schema):
+            # Обязательный ключ без схемы в этом узле: её задаёт другая часть allOf,
+            # а сам узел требует только его наличия.
+            declared = set(properties) if isinstance(properties, Mapping) else set()
+            for name in sorted(required - declared):
+                entries.append(_Entry(label=name, schema={}, requirement="required"))
         additional = schema.get("additionalProperties")
         if isinstance(additional, Mapping) and _has_structure(additional):
             entries.append(
@@ -324,7 +330,17 @@ def _has_structure(schema: Mapping[str, Any]) -> bool:
         return True
     if any(key in schema for key in ("oneOf", "anyOf", "allOf")):
         return True
+    if _is_object(schema) and _string_sequence(schema.get("required")):
+        return True
     return isinstance(schema.get("additionalProperties"), Mapping)
+
+
+def _is_object(schema: Mapping[str, Any]) -> bool:
+    """Объявлен ли у узла тип ``object`` (в том числе вместе с ``null``)."""
+    declared = schema.get("type")
+    if isinstance(declared, str):
+        return declared == "object"
+    return isinstance(declared, Sequence) and "object" in declared
 
 
 # ---------------------------------------------------------------- summaries
