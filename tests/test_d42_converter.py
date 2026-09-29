@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 from d42 import ValidationException, optional, schema, validate_or_fail
@@ -28,6 +29,7 @@ from geas.errors import (
     UnsupportedConstructError,
 )
 from geas.integrations.d42.converter import to_d42
+from geas.integrations.d42.typed_dict import typed_dict
 from geas.models import (
     AdditionalProperties,
     AllOfNode,
@@ -413,7 +415,40 @@ def test_missing_definition_is_a_ref_resolution_error() -> None:
 # ==================================================================== fail closed
 
 
-def test_all_of_fails_closed() -> None:
+def test_required_key_without_schema_accepts_any_value() -> None:
+    """``required`` без схемы: ключ обязан быть, значение ограничивает только ``additionalProperties``."""
+    node = ObjectNode(
+        origin=ORIGIN,
+        properties=(prop("id", StringNode(origin=ORIGIN)),),
+        required_undeclared=("note",),
+    )
+
+    assert to_d42(node, {}) == schema.dict({"id": schema.str, "note": schema.any, ...: ...})
+
+
+def test_required_key_without_schema_takes_the_additional_properties_schema() -> None:
+    node = ObjectNode(
+        origin=ORIGIN,
+        additional_properties=IntegerNode(origin=ORIGIN),
+        required_undeclared=("count",),
+    )
+
+    assert to_d42(node, {}) == typed_dict(schema.dict({"count": schema.int}), additional=schema.int)
+
+
+def test_required_key_forbidden_by_additional_properties_fails_closed() -> None:
+    node = ObjectNode(
+        origin=ORIGIN,
+        additional_properties=AdditionalProperties.FORBIDDEN,
+        required_undeclared=("note",),
+    )
+
+    with pytest.raises(UnsupportedConstructError, match="запрещён additionalProperties: false"):
+        to_d42(node, {})
+
+
+def test_compatible_all_of_is_intersected() -> None:
+    """``allOf`` доказуемо совместимых объектов — один словарь (правила — ``test_d42_intersection``)."""
     node = AllOfNode(
         origin=ORIGIN,
         parts=(
@@ -421,11 +456,41 @@ def test_all_of_fails_closed() -> None:
             obj(prop("b", StringNode(origin=ORIGIN))),
         ),
     )
+
+    assert to_d42(node, {}) == schema.dict({"a": schema.str, "b": schema.str, ...: ...})
+
+
+def test_contradicting_all_of_fails_closed() -> None:
+    """Пересечение без единого значения — отказ с причиной, а не пустая схема."""
+    node = AllOfNode(
+        origin=ORIGIN,
+        parts=(
+            obj(prop("a", StringNode(origin=ORIGIN))),
+            obj(prop("a", IntegerNode(origin=ORIGIN))),
+        ),
+    )
     with pytest.raises(UnsupportedConstructError) as info:
         to_d42(node, {})
 
-    assert "allOf" in str(info.value)
-    assert "пересечения типов" in str(info.value)
+    message = str(info.value)
+    assert "allOf не допускает ни одного значения" in message
+    assert "свойство 'a': типы string и integer несовместимы" in message
+    assert "[contract path /]" in message
+
+
+def test_unprovable_all_of_fails_closed() -> None:
+    node = AllOfNode(
+        origin=ORIGIN,
+        parts=(
+            obj(prop("a", StringNode(origin=ORIGIN, pattern="^x"))),
+            obj(prop("a", StringNode(origin=ORIGIN, pattern="y$"))),
+        ),
+    )
+    with pytest.raises(UnsupportedConstructError) as info:
+        to_d42(node, {})
+
+    assert "allOf не выражается в d42" in str(info.value)
+    assert "[contract path /a]" in str(info.value)
 
 
 @pytest.mark.parametrize(
@@ -517,26 +582,53 @@ def test_typed_additional_properties_support_fake_substitution_and_make_required
     validate_or_fail(required, {"fixed": 7, "dynamic": "value"})
 
 
-def test_self_recursive_definition_is_rejected() -> None:
+def test_self_recursion_is_cut_on_the_closing_reference() -> None:
+    """Самоссылка не отклоняется: ссылка, замыкающая цикл, становится листом.
+
+    Лист проверяет вложенные уровни по JSON Schema определения, поэтому закрытость
+    объекта держится на любой глубине, а не только на верхнем уровне.
+    """
+    from geas.integrations.d42 import RecursiveRefSchema
+
     definitions = {
         "Node": obj(prop("child", RefNode(origin=ORIGIN, name="Node"), required=False), closed=True)
     }
-    with pytest.raises(RecursiveSchemaError) as info:
-        to_d42(RefNode(origin=ORIGIN, name="Node"), definitions)
+    converted = to_d42(RefNode(origin=ORIGIN, name="Node"), definitions)
 
-    assert "Node -> Node" in str(info.value)
+    child, is_optional = converted.props.keys["child"]
+    assert is_optional is True
+    assert isinstance(child, RecursiveRefSchema)
+    assert child.name == "Node"
+    assert "recursive_ref('Node')" in repr(converted)
+    validate_or_fail(converted, {"child": {"child": {}}})
+    with pytest.raises(ValidationException, match="Node"):
+        validate_or_fail(converted, {"child": {"child": {"extra": 1}}})
 
 
-def test_mutual_recursion_names_the_whole_cycle() -> None:
+def test_mutual_recursion_is_cut_where_the_cycle_closes_from_the_root() -> None:
+    """Место отсечки зависит от корня: цикл режется на ссылке, которая в него возвращается."""
+    from geas.integrations.d42 import RecursiveRefSchema
+
     definitions = {
         "Alpha": obj(prop("beta", RefNode(origin=ORIGIN, name="Beta")), closed=True),
         "Beta": obj(prop("gamma", RefNode(origin=ORIGIN, name="Gamma")), closed=True),
         "Gamma": obj(prop("alpha", RefNode(origin=ORIGIN, name="Alpha")), closed=True),
     }
-    with pytest.raises(RecursiveSchemaError) as info:
-        to_d42(RefNode(origin=ORIGIN, name="Alpha"), definitions)
 
-    assert "Alpha -> Beta -> Gamma -> Alpha" in str(info.value)
+    def descend(schema_: Any, *path: str) -> Any:
+        for key in path:
+            schema_, _ = schema_.props.keys[key]
+        return schema_
+
+    from_alpha = to_d42(RefNode(origin=ORIGIN, name="Alpha"), definitions)
+    leaf = descend(from_alpha, "beta", "gamma", "alpha")
+    assert isinstance(leaf, RecursiveRefSchema)
+    assert leaf.name == "Alpha"
+
+    from_beta = to_d42(RefNode(origin=ORIGIN, name="Beta"), definitions)
+    leaf = descend(from_beta, "gamma", "alpha", "beta")
+    assert isinstance(leaf, RecursiveRefSchema)
+    assert leaf.name == "Beta"
 
 
 def test_recursive_error_is_an_unsupported_construct_error() -> None:
@@ -574,6 +666,25 @@ def test_enum_value_conflicting_with_pattern_fails_closed() -> None:
         to_d42(node, {})
 
     assert "не соответствует pattern" in str(info.value)
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        pytest.param(StringNode(origin=ORIGIN, pattern=r"^\p{Lu}+$"), id="pattern"),
+        pytest.param(
+            StringNode(origin=ORIGIN, pattern=r"^\p{Lu}+$", enum=("ABC",)), id="pattern-and-enum"
+        ),
+    ],
+)
+def test_pattern_python_cannot_compile_fails_closed(node: StringNode) -> None:
+    """Нормализация такой паттерн не пропускает; IR, собранный вручную, тоже не роняет d42.
+
+    Раньше ``enum`` ронял конвертер сырым ``re.error``, а без ``enum`` модуль
+    рендерился, но d42 падал ``DeclarationError`` при сборке схемы.
+    """
+    with pytest.raises(UnsupportedConstructError, match="не разбирается"):
+        to_d42(node, {})
 
 
 @pytest.mark.parametrize(

@@ -63,14 +63,16 @@
 | `oneof_discriminator.yaml` | `oneOf` + `discriminator` с явным `mapping`, варианты — `$ref` | разбирается |
 | `oneof_no_mapping.yaml` | `oneOf` + `discriminator` без `mapping` | разбирается |
 | `anyof.yaml` | `anyOf`: вид композиции обязан сохраниться точно | разбирается |
-| `allof_unmergeable.yaml` | `allOf`, части которого конфликтуют по свойству `size` | разбирается, но композиция не сливается |
-| `allof_with_siblings.yaml` | `allOf` рядом с собственными `type`/`properties`/`required` | разбирается, локальная часть не теряется |
-| `oneof_with_siblings.yaml` | `oneOf` рядом с собственными `type`/`properties`/`required` | разбирается |
+| `allof_unmergeable.yaml` | `allOf`, части которого конфликтуют по свойству `size` | разбирается, но композиция не сливается; d42 отклоняется — пересечение пусто |
+| `allof_with_siblings.yaml` | `allOf` рядом с собственными `type`/`properties`/`required` | разбирается, локальная часть не теряется; d42 — один словарь |
+| `oneof_with_siblings.yaml` | `oneOf` рядом с собственными `type`/`properties`/`required` | разбирается; d42 — `schema.any` веток со свойством базы |
+| `allof_polymorphic.yaml` | пять операций на springdoc-DTO (`properties` + `oneOf` + `discriminator`): вариант, равный своему пересечению, вариант без свойств базы, рекурсия через вариант, пустой открытый объект и полиморфная ссылка в базе, наследование `allOf: [$ref]`, наследник с `required` на ключ без схемы в своей части (`CaptionedBlock`), пустая ветка, недоказуемое пересечение (два `pattern`) | d42 распределяет пересечение по вариантам; `caption` обязателен в каждой ветке; `Heart` выброшена и названа в `update`; запрос `stampDocument` без d42 |
 | `ref_siblings.yaml` | соседи `$ref`: `readOnly` и `nullable` — законные, `minLength` — нет | `getLegalCard` разбирается, `getIllegalCard` отклоняется |
 | `cookie_params.yaml` | параметр в cookie | разбирается |
 | `deep_object.yaml` | `style: deepObject` в query | обе операции отклоняются |
 | `unknown_format.yaml` | `format: my-custom-tag` на строке | отклоняется при `unknown_formats: reject`, проходит при `annotate` |
 | `recursive.yaml` | самоссылка (`Node`) и взаимный цикл из трёх схем (`Alpha → Beta → Gamma → Alpha`) | разбирается, контракт помечается рекурсивным |
+| `recursive_d42.yaml` | четыре операции: обязательный рекурсивный массив при нерекурсивном запросе, цикл через `oneOf` с выходом, отказ d42 только в ответе, цикл только через обязательное поле | d42 генерируется с отсечкой цикла по направлениям; у `Chain` нет конечного значения |
 | `multi_content_types.yaml` | два content type у запроса, `application/json` + `application/pdf` у ответа | разбирается, PDF-вариант помечается как непредставимый |
 | `charset_media_type.yaml` | `application/json;charset=UTF-8` и вариант с пробелом и другим регистром | оба нормализуются в `application/json` |
 | `default_response.yaml` | единственный ответ операции — `default` | разбирается |

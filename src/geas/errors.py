@@ -224,14 +224,20 @@ class ContractOverlayError(ContractError):
 
 
 class MissingExtraError(ContractError, ImportError):
-    """Требуется опциональная интеграция, которая не установлена."""
+    """Требуется опциональная интеграция, которая не установлена или слишком старая."""
 
-    def __init__(self, extra: str, feature: str) -> None:
+    def __init__(self, extra: str, feature: str, *, requirement: str | None = None) -> None:
         self.extra = extra
         self.feature = feature
-        super().__init__(
-            f"{feature} требует опциональной зависимости. Установите: pip install 'geas[{extra}]'"
-        )
+        self.requirement = requirement
+        if requirement is None:
+            message = (
+                f"{feature} требует опциональной зависимости. "
+                f"Установите: pip install 'geas[{extra}]'"
+            )
+        else:
+            message = f"{feature} требует {requirement}. Обновите: pip install -U 'geas[{extra}]'"
+        super().__init__(message)
 
 
 class ContractMockError(ContractError):

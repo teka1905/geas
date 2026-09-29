@@ -220,6 +220,7 @@ class OperationHandle:
     __slots__ = (
         "_d42_modules",
         "_d42_reason",
+        "_d42_reasons",
         "_key",
         "_method",
         "_operation_id",
@@ -245,6 +246,7 @@ class OperationHandle:
         unsupported: tuple[str, ...] = (),
         d42_modules: Mapping[str, str | None] | None = None,
         d42_reason: str | None = None,
+        d42_reasons: Mapping[str, str | None] | None = None,
     ) -> None:
         self._key = key
         self._operation_id = operation_id
@@ -257,6 +259,7 @@ class OperationHandle:
         self._unsupported = unsupported
         self._d42_modules = dict(d42_modules or {})
         self._d42_reason = d42_reason
+        self._d42_reasons = dict(d42_reasons or {})
 
     # ------------------------------------------------------------ свойства
 
@@ -732,15 +735,18 @@ class OperationHandle:
         направлении ровно одна d42-схема, его можно не передавать; если их
         несколько, выбор обязателен — молча брать первую нельзя.
 
-        Требует extra ``[d42]``. Если для операции d42 не генерировался
-        (например из-за рекурсии в контракте), поднимается понятная ошибка.
+        Требует extra ``[d42]``. Если d42 для направления не генерировался
+        (``d42: false`` в manifest или конструкция, невыразимая в d42), поднимается
+        понятная ошибка с причиной.
         """
         if export is None:
             export = self._only_d42_export(direction)
         module_name = self._d42_module_name(direction)
         if module_name is None or export is None:
-            reason = self._d42_reason or (
-                "контракт рекурсивен либо в manifest у операции стоит d42: false"
+            reason = (
+                self._d42_reasons.get(direction.value)
+                or self._d42_reason
+                or "в manifest у операции стоит d42: false"
             )
             raise OperationLookupError(
                 f"для операции {self._key!r} не сгенерированы d42-схемы направления "
@@ -809,6 +815,8 @@ def _import_d42_module(module_name: str) -> Any:
         import d42  # noqa: F401
     except ImportError as exc:
         raise MissingExtraError("d42", "generated d42-схемы") from exc
+    # Интеграция сама проверяет версию d42 и объясняет, если она слишком старая.
+    import_module("geas.integrations.d42")
     return import_module(module_name)
 
 

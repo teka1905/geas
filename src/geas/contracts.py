@@ -88,7 +88,7 @@ class BuiltOperation:
     document: dict[str, Any]
     #: Причины, по которым отдельные варианты не представимы контрактом.
     unsupported: tuple[str, ...]
-    #: Есть ли в контракте рекурсия (тогда d42 для операции не генерируется).
+    #: Есть ли в контракте рекурсия. d42 при этом генерируется с отсечкой цикла.
     recursive: bool
     #: Именованные определения IR направления ``request``.
     request_definitions: tuple[tuple[str, SchemaNode], ...] = ()
@@ -411,7 +411,7 @@ def _build_operation(
         response_definitions=response_normalizer.definitions,
         unsupported=tuple(unsupported),
         recursive=recursive,
-        d42_enabled=(spec.d42 if spec is not None else True) and not recursive,
+        d42_enabled=spec.d42 if spec is not None else True,
     )
     return BuiltOperation(
         contract=contract,

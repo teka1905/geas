@@ -64,6 +64,9 @@ def handle_from_document(
     contract = Path(contract_file) if contract_file is not None else None
     d42_section = document.get("d42") or {}
     d42_reason = d42_section.get("reason")
+    d42_reasons = {
+        direction: d42_section.get(f"{direction}_reason") for direction in ("request", "response")
+    }
     modules: dict[str, str | None] = {"request": None, "response": None}
     sources: dict[str, Path | None] = {"request": None, "response": None}
     if d42_section.get("enabled"):
@@ -130,6 +133,7 @@ def handle_from_document(
         unsupported=tuple(document.get("unsupported") or ()),
         d42_modules=modules,
         d42_reason=d42_reason,
+        d42_reasons=d42_reasons,
     )
 
 

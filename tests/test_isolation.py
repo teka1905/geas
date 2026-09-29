@@ -219,3 +219,46 @@ def test_blocker_really_blocks() -> None:
     blocked = run_isolated("import d42\nprint('IMPORTED')\n", block=("d42",))
     assert blocked.returncode != 0
     assert "намеренно недоступен" in blocked.stderr
+
+
+#: Снимает с d42 то, чего не было до 2.3.0: так выглядит установленная d42 2.2.
+_D42_BEFORE_2_3 = "import d42.declaration.types as _types\ndel _types.is_absent\n"
+
+
+def test_outdated_d42_is_named_instead_of_a_missing_extra() -> None:
+    """d42 без ``is_absent`` (до 2.3.0) — ошибка про версию, а не «установите geas[d42]»."""
+    result = run(
+        _D42_BEFORE_2_3 + "from geas.errors import MissingExtraError\n"
+        "try:\n"
+        "    import geas.integrations.d42\n"
+        "except MissingExtraError as error:\n"
+        "    print('ERR', error)\n",
+        block=(),
+    )
+
+    assert "ERR" in result.stdout
+    assert "d42>=2.3,<3, а установлена d42 " in result.stdout
+    assert "pip install -U 'geas[d42]'" in result.stdout
+    assert "требует опциональной зависимости" not in result.stdout
+
+
+def test_update_with_outdated_d42_names_the_version(project_root: str) -> None:
+    """``geas update`` на старой d42 объясняет версию, а не просит поставить extra."""
+    manifest = str(Path(project_root) / "manifest.yaml")
+    result = run(
+        _D42_BEFORE_2_3 + "from geas.errors import MissingExtraError\n"
+        "from geas.artifacts import render_artifacts\n"
+        "from geas.contracts import build_contracts\n"
+        "from geas.manifest import load_manifest\n"
+        "from geas.waivers import load_waivers\n"
+        f"manifest = load_manifest({manifest!r})\n"
+        f"waivers = load_waivers({str(Path(project_root) / 'waivers.yaml')!r})\n"
+        "try:\n"
+        "    render_artifacts(manifest, build_contracts(manifest, waivers))\n"
+        "except MissingExtraError as error:\n"
+        "    print('ERR', error)\n",
+        block=(),
+    )
+
+    assert "d42>=2.3,<3" in result.stdout
+    assert "требует опциональной зависимости" not in result.stdout

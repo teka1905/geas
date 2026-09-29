@@ -26,6 +26,7 @@ __all__ = [
     "ARRAY_DELIMITERS",
     "MAX_VALUE_REPR",
     "decode_parameter",
+    "json_schema_validator",
     "validate_instance",
 ]
 
@@ -70,6 +71,22 @@ def _pointer(parts: Any) -> str:
     return "/" + "/".join(tokens) if tokens else ""
 
 
+def json_schema_validator(
+    schema: dict[str, Any], *, check_formats: bool = True
+) -> Draft202012Validator:
+    """Валидатор JSON Schema с теми же настройками, что у проверки ответов и запросов.
+
+    Draft 2020-12 и пустой реестр ссылок: внешний ``$ref`` становится ошибкой, а
+    не HTTP-запросом. ``check_formats=False`` отключает проверку ``format`` — так
+    работает d42-путь, который ``format`` не проверяет и не генерирует.
+    """
+    return Draft202012Validator(
+        schema,
+        registry=_EMPTY_REGISTRY,
+        format_checker=Draft202012Validator.FORMAT_CHECKER if check_formats else None,
+    )
+
+
 def validate_instance(
     schema: dict[str, Any],
     instance: Any,
@@ -85,11 +102,7 @@ def validate_instance(
     значения, указатель в схеме, нарушенное правило и безопасное представление
     фактического значения.
     """
-    validator = Draft202012Validator(
-        schema,
-        registry=_EMPTY_REGISTRY,
-        format_checker=Draft202012Validator.FORMAT_CHECKER,
-    )
+    validator = json_schema_validator(schema)
     try:
         errors = sorted(validator.iter_errors(instance), key=lambda item: list(item.absolute_path))
     except Exception as exc:

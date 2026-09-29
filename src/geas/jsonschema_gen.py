@@ -17,6 +17,7 @@ OpenAPI 3.0 — это подмножество Draft 4 со своими рас
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from .models import (
@@ -30,6 +31,7 @@ from .models import (
     NullNode,
     NumberNode,
     ObjectNode,
+    Origin,
     RefNode,
     SchemaNode,
     StringNode,
@@ -37,10 +39,18 @@ from .models import (
     UnionNode,
 )
 
-__all__ = ["JSON_SCHEMA_DIALECT", "node_to_json_schema", "to_json_schema"]
+__all__ = [
+    "JSON_SCHEMA_DIALECT",
+    "definitions_json_schema",
+    "node_to_json_schema",
+    "to_json_schema",
+]
 
 #: Идентификатор диалекта, который проставляется в каждый generated-документ.
 JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+
+#: Происхождение служебных узлов, которых нет в исходной спецификации.
+_NO_ORIGIN = Origin(source="", pointer="")
 
 
 def to_json_schema(
@@ -63,6 +73,22 @@ def to_json_schema(
         }
     document.update(node_to_json_schema(root))
     return document
+
+
+def definitions_json_schema(
+    names: Iterable[str], definitions: Mapping[str, SchemaNode]
+) -> dict[str, dict[str, Any]]:
+    """``$defs`` для набора определений: они сами и всё, что из них достижимо.
+
+    Нужен тем, кто проверяет значение по одному определению в отрыве от корня
+    операции, — например, узлу d42, на котором отсечён цикл. Результат совпадает с
+    соответствующими записями ``$defs`` документа контракта.
+    """
+    roots = [RefNode(origin=_NO_ORIGIN, name=name) for name in sorted(set(names))]
+    reachable: dict[str, SchemaNode] = {}
+    for root in roots:
+        reachable.update(_reachable_definitions(root, dict(definitions)))
+    return {name: node_to_json_schema(reachable[name]) for name in sorted(reachable)}
 
 
 def _reachable_definitions(

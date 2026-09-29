@@ -27,6 +27,17 @@
 * перенос строк — ``LF``, кодировка ``UTF-8``, ровно один завершающий перевод строки,
   пробелов в конце строк нет.
 
+Рекурсия
+--------
+
+Если в модуле есть отсечённые циклы (см. раздел «Рекурсия» у
+:mod:`~geas.integrations.d42.converter`), после импортов печатается
+``_RECURSION = RecursionContract({...})`` с JSON Schema отсечённых определений,
+отсечённый узел рендерится как ``_RECURSION.ref("Имя")``, а после определений
+идёт ``_RECURSION.bind({...})``. JSON Schema встраивается в модуль, а не читается
+из файла контракта: модуль самодостаточен, и ``exec`` по-прежнему даёт схемы,
+равные результату ``to_d42``.
+
 Форматирование — идиоматичное для d42 (такое же, как у ``d42.represent``):
 ``schema.dict({...})`` разворачивается «скобка на первой строке, элементы с отступом
 в 4 пробела, висячая запятая». Это не строго ``black``, зато читается так же, как
@@ -41,10 +52,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from geas.errors import ArtifactError, NamespaceCollisionError, RefResolutionError
 from geas.integrations.d42.converter import (
+    DroppedBranchNote,
+    _Cut,
     _DictPlan,
     _Leaf,
     _ListPlan,
@@ -52,14 +66,17 @@ from geas.integrations.d42.converter import (
     _Plan,
     _Ref,
     _UnionPlan,
+    cut_cycles,
+    cut_targets,
     plan_node,
     referenced_names,
     topological_order,
 )
+from geas.jsonschema_gen import definitions_json_schema
 from geas.models import SchemaNode
 from geas.naming import d42_schema_name, python_identifier
 
-__all__ = ["render_expression", "render_module"]
+__all__ = ["ModuleNotes", "cycle_cuts", "module_notes", "render_expression", "render_module"]
 
 #: Максимальная длина строки в сгенерированном модуле.
 LINE_LENGTH = 100
@@ -75,6 +92,11 @@ _GENERATED_NOTICE = (
 
 _HEADER = "from __future__ import annotations\n\nfrom d42 import optional, schema\n"
 _TYPED_DICT_IMPORT = "from geas.integrations.d42.typed_dict import typed_dict\n"
+_RECURSION_IMPORT = "from geas.integrations.d42.recursion import RecursionContract\n"
+
+#: Имя переменной модуля с контрактом рекурсии. Не пересекается с generated-именами:
+#: у определений и экспортов обязательный суффикс ``Schema``.
+_RECURSION = "_RECURSION"
 
 #: Определения и экспорты принимаются и как mapping, и как последовательность пар.
 Definitions = Mapping[str, SchemaNode] | Sequence[tuple[str, SchemaNode]]
@@ -85,6 +107,7 @@ def render_module(
     module_docstring: str,
     definitions: Definitions,
     exports: Definitions,
+    roots: Sequence[SchemaNode] | None = None,
 ) -> str:
     """Собрать исходник модуля со схемами d42.
 
@@ -92,17 +115,21 @@ def render_module(
     имя переменной выводится через :func:`~geas.naming.d42_schema_name`.
     ``exports`` — корневые схемы вариантов запроса и ответа: имя переменной (его
     задаёт вызывающий) → узел IR.
+    ``roots`` — корни, от которых отсекаются циклы (тела вариантов в порядке
+    контракта). По умолчанию — экспорты по алфавиту.
 
     Определения печатаются в порядке зависимостей, экспорты — после них по алфавиту.
     """
     definition_nodes = dict(definitions)
     export_nodes = dict(exports)
 
-    plans = {
+    raw_plans = {
         name: plan_node(node, definition_nodes, definition=name)
         for name, node in definition_nodes.items()
     }
     export_plans = {name: plan_node(node, definition_nodes) for name, node in export_nodes.items()}
+    plans, _ = cut_cycles(_root_plans(roots, export_plans, definition_nodes), raw_plans)
+    cut = sorted(cut_targets(plans.values()))
 
     refs = _definition_variables(definition_nodes)
     for name in sorted(export_plans):
@@ -118,11 +145,20 @@ def render_module(
 
     all_plans = [*plans.values(), *export_plans.values()]
     header = _HEADER
+    if cut:
+        header += _RECURSION_IMPORT
     if any(_uses_typed_dict(plan) for plan in all_plans):
         header += _TYPED_DICT_IMPORT
     blocks: list[str] = [_docstring(module_docstring), header]
+    if cut:
+        json_definitions = definitions_json_schema(cut, definition_nodes)
+        prefix = f"{_RECURSION} = RecursionContract("
+        blocks.append(f"{prefix}{_render_json(json_definitions, indent=0, used=len(prefix))})")
     for name in topological_order(plans):
         blocks.append(_assignment(refs[name], plans[name], refs))
+    if cut:
+        bindings = "\n".join(f"{' ' * _INDENT}{_literal(name)}: {refs[name]}," for name in cut)
+        blocks.append(f"{_RECURSION}.bind({{\n{bindings}\n}})")
     for name in sorted(export_plans):
         blocks.append(_assignment(name, export_plans[name], refs))
 
@@ -132,6 +168,55 @@ def render_module(
 
     text = "\n\n".join(blocks)
     return "\n".join(line.rstrip() for line in text.split("\n")).rstrip("\n") + "\n"
+
+
+@dataclass(frozen=True, slots=True)
+class ModuleNotes:
+    """Что модуль сделал с контрактом ради d42 — для отчёта ``geas update``."""
+
+    #: Отсечённые рёбра ``(определение, на которое ссылается отсечённый узел)``.
+    cuts: tuple[tuple[str, str], ...]
+    #: Ветки ``allOf``, выброшенные как пустые, в стабильном порядке.
+    dropped: tuple[DroppedBranchNote, ...]
+
+
+def module_notes(*, definitions: Definitions, roots: Sequence[SchemaNode]) -> ModuleNotes:
+    """Где модуль с такими определениями и корнями отсечёт циклы и какие ветки выбросит.
+
+    Результат — то же, что сделает :func:`render_module` с теми же аргументами.
+    """
+    definition_nodes = dict(definitions)
+    dropped: list[DroppedBranchNote] = []
+    plans = {
+        name: plan_node(node, definition_nodes, definition=name, dropped=dropped)
+        for name, node in definition_nodes.items()
+    }
+    root_plans = [plan_node(node, definition_nodes, dropped=dropped) for node in roots]
+    _, back = cut_cycles(root_plans, plans)
+    unique = sorted(set(dropped), key=lambda note: (note.where, note.branch, note.reason))
+    return ModuleNotes(cuts=back, dropped=tuple(unique))
+
+
+def cycle_cuts(
+    *, definitions: Definitions, roots: Sequence[SchemaNode]
+) -> tuple[tuple[str, str], ...]:
+    """Где модуль с такими определениями и корнями отсечёт циклы.
+
+    Возвращает рёбра ``(определение, на которое ссылается отсечённый узел)`` — то же,
+    что сделает :func:`render_module` с теми же аргументами.
+    """
+    return module_notes(definitions=definitions, roots=roots).cuts
+
+
+def _root_plans(
+    roots: Sequence[SchemaNode] | None,
+    export_plans: Mapping[str, _Plan],
+    definitions: Mapping[str, SchemaNode],
+) -> list[_Plan]:
+    """Планы корней, от которых отсекаются циклы."""
+    if roots is None:
+        return [export_plans[name] for name in sorted(export_plans)]
+    return [plan_node(node, definitions) for node in roots]
 
 
 def render_expression(
@@ -256,6 +341,8 @@ def _single(plan: _Plan, refs: Mapping[str, str]) -> str:
     """Однострочная форма выражения — она же критерий «влезает ли»."""
     if isinstance(plan, _Ref):
         return refs[plan.name]
+    if isinstance(plan, _Cut):
+        return f"{_RECURSION}.ref({_literal(plan.name)})"
     if isinstance(plan, _Leaf):
         base = f"schema.{plan.base}"
         if not isinstance(plan.literal, _NoLiteral):
@@ -276,6 +363,47 @@ def _single(plan: _Plan, refs: Mapping[str, str]) -> str:
         return f"schema.list({_single(plan.items, refs)}){_calls(plan.calls)}"
     variants = ", ".join(_single(variant, refs) for variant in plan.variants)
     return f"schema.any({variants})"
+
+
+def _render_json(value: Any, *, indent: int, used: int) -> str:
+    """Python-литерал JSON-значения: в одну строку, если влезает, иначе разложенный.
+
+    Ключи словарей сортируются — порядок в артефакте не зависит от порядка в
+    спецификации.
+    """
+    single = _json_single(value)
+    if used + len(single) <= LINE_LENGTH or not isinstance(value, (dict, list)) or not value:
+        return single
+    pad = " " * (indent + _INDENT)
+    close = " " * indent
+    if isinstance(value, dict):
+        lines = []
+        for key in sorted(value):
+            rendered_key = _literal(key)
+            item = _render_json(
+                value[key],
+                indent=indent + _INDENT,
+                used=indent + _INDENT + len(rendered_key) + 3,
+            )
+            lines.append(f"{pad}{rendered_key}: {item},")
+        return "{\n" + "\n".join(lines) + f"\n{close}}}"
+    items = [
+        f"{pad}{_render_json(item, indent=indent + _INDENT, used=indent + _INDENT + 1)},"
+        for item in value
+    ]
+    return "[\n" + "\n".join(items) + f"\n{close}]"
+
+
+def _json_single(value: Any) -> str:
+    if isinstance(value, dict):
+        return (
+            "{"
+            + ", ".join(f"{_literal(key)}: {_json_single(value[key])}" for key in sorted(value))
+            + "}"
+        )
+    if isinstance(value, list):
+        return "[" + ", ".join(_json_single(item) for item in value) + "]"
+    return _literal(value)
 
 
 def _uses_typed_dict(plan: _Plan) -> bool:

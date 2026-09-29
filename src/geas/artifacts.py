@@ -84,8 +84,14 @@ class ArtifactSet:
     """Полный набор generated-файлов."""
 
     files: tuple[Artifact, ...]
-    #: Операции, для которых d42 отключён, и причина — попадает в вывод ``update``.
+    #: Операции, для которых d42 отключён хотя бы в одном направлении, и причина —
+    #: попадает в вывод ``update``.
     d42_disabled: tuple[tuple[str, str], ...] = ()
+    #: Где отсечены циклы: ``(операция, направление, определение, цель ссылки)``.
+    d42_cycle_cuts: tuple[tuple[str, str, str, str], ...] = ()
+    #: Ветки ``allOf``, выброшенные из d42 как пустые:
+    #: ``(операция, направление, contract path allOf, ветка, причина)``.
+    d42_dropped_branches: tuple[tuple[str, str, str, str, str], ...] = ()
 
     def paths(self) -> tuple[str, ...]:
         """Owned-пути в стабильном порядке."""
@@ -134,10 +140,10 @@ def render_artifacts(manifest: Manifest, result: BuildResult) -> ArtifactSet:
 
     # d42 рендерится первым: его отказ не должен ронять операцию целиком, но обязан
     # быть записан в документ контракта до того, как документ попадёт в артефакт.
-    d42_files, d42_disabled = _render_d42_modules(result)
+    d42_files, d42_disabled, cycle_cuts, dropped = _render_d42_modules(result)
 
     for built in result.operations:
-        document = _document_with_d42_status(built, d42_disabled.get(built.contract.key))
+        document = _document_with_d42_status(built, d42_disabled.get(built.contract.key, {}))
         slug = document["slug"]
         index[built.contract.key] = slug
         fingerprints[built.contract.key] = semantic_fingerprint(document)
@@ -173,35 +179,50 @@ def render_artifacts(manifest: Manifest, result: BuildResult) -> ArtifactSet:
     files.append(Artifact(path=GENERATED_INDEX, content=_json_text(generated)))
     return ArtifactSet(
         files=tuple(sorted(files, key=lambda item: item.path)),
-        d42_disabled=tuple(sorted(d42_disabled.items())),
+        d42_disabled=tuple(
+            (key, _describe_reasons(reasons)) for key, reasons in sorted(d42_disabled.items())
+        ),
+        d42_cycle_cuts=tuple(sorted(cycle_cuts)),
+        d42_dropped_branches=tuple(sorted(dropped)),
     )
 
 
-def _document_with_d42_status(built: Any, reason: str | None) -> dict[str, Any]:
+def _document_with_d42_status(built: Any, reasons: Mapping[str, str]) -> dict[str, Any]:
     """Документ контракта с учётом того, удалось ли отрендерить d42.
 
     Конструкция может быть точно выразима контрактом и JSON Schema, но не
-    выразима в d42 (пересечение ``allOf``, ``multipleOf``, рекурсия). Ронять
-    из-за этого всю операцию неправильно: ядро не
-    обязано зависеть от опциональной интеграции. Поэтому d42 отключается
-    **точечно**, причина записывается в артефакт и всплывает в ``update``, а
+    выразима в d42 (``multipleOf``, недоказуемое пересечение ``allOf``). Ронять
+    из-за этого всю операцию неправильно: ядро не обязано зависеть от
+    опциональной интеграции. Поэтому d42 отключается **точечно и по направлениям**: запрос
+    не теряет d42 из-за ответа и наоборот. Причина записывается в артефакт
+    (``<direction>_reason`` и сводная ``reason``) и всплывает в ``update``, а
     обращение к отсутствующей d42-схеме падает с этой же причиной.
     """
     document: dict[str, Any] = built.document
-    if reason is None:
+    if not reasons:
         return document
     patched = dict(document)
-    patched["d42"] = {
-        **document.get("d42", {}),
-        "enabled": False,
-        "request_module": None,
-        "response_module": None,
-        "reason": reason,
-    }
-    patched["unsupported"] = [*document.get("unsupported", []), f"d42: {reason}"]
-    patched["request"] = _strip_d42_exports(document["request"], key="bodies")
-    patched["responses"] = [{**item, "d42": None} for item in document["responses"]]
+    section = dict(document.get("d42", {}))
+    for direction, reason in sorted(reasons.items()):
+        section[f"{direction}_module"] = None
+        section[f"{direction}_reason"] = reason
+    section["enabled"] = bool(section.get("request_module") or section.get("response_module"))
+    section["reason"] = _describe_reasons(reasons)
+    patched["d42"] = section
+    patched["unsupported"] = [
+        *document.get("unsupported", []),
+        *(f"d42 ({direction}): {reason}" for direction, reason in sorted(reasons.items())),
+    ]
+    if "request" in reasons:
+        patched["request"] = _strip_d42_exports(document["request"], key="bodies")
+    if "response" in reasons:
+        patched["responses"] = [{**item, "d42": None} for item in document["responses"]]
     return patched
+
+
+def _describe_reasons(reasons: Mapping[str, str]) -> str:
+    """Сводная причина отключения d42: по строке на направление."""
+    return "; ".join(f"{direction}: {reason}" for direction, reason in sorted(reasons.items()))
 
 
 def _strip_d42_exports(request: dict[str, Any], *, key: str) -> dict[str, Any]:
@@ -218,7 +239,14 @@ def _json_text(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
-def _render_d42_modules(result: BuildResult) -> tuple[list[Artifact], dict[str, str]]:
+def _render_d42_modules(
+    result: BuildResult,
+) -> tuple[
+    list[Artifact],
+    dict[str, dict[str, str]],
+    list[tuple[str, str, str, str]],
+    list[tuple[str, str, str, str, str]],
+]:
     """Отрендерить d42-модули, отключая d42 точечно там, где он невыразим.
 
     Рендер опирается на тот же «план» схемы, что и построение живого объекта d42,
@@ -227,57 +255,66 @@ def _render_d42_modules(result: BuildResult) -> tuple[list[Artifact], dict[str, 
     :class:`MissingExtraError` с точной командой установки.
 
     Если же d42 установлен, но конструкцию выразить не умеет, операция **не**
-    падает: возвращается причина, которая попадёт в документ контракта.
+    падает: возвращается причина, которая попадёт в документ контракта. Направления
+    независимы — отказ d42 в ответе не отнимает d42 у запроса.
+
+    Рекурсия d42 не отключает: цикл отсекается, и места отсечки возвращаются
+    третьим элементом для отчёта ``geas update``. Четвёртый — ветки ``allOf``,
+    которые распределение выбросило как пустые (они не допускают ни одного значения
+    ещё в контракте).
     """
     needed = [
         built for built in result.operations if (built.document.get("d42") or {}).get("enabled")
     ]
     if not needed:
-        return [], {}
-    try:
-        from .integrations.d42.renderer import render_module
-    except ImportError as exc:
-        from .errors import MissingExtraError
+        return [], {}, [], []
+    from .errors import MissingExtraError
 
+    try:
+        from .integrations.d42.renderer import module_notes, render_module
+    except MissingExtraError:
+        # Интеграция сама объяснила, чего не хватает (например, d42 слишком старая).
+        raise
+    except ImportError as exc:
         keys = ", ".join(built.contract.key for built in needed)
         raise MissingExtraError("d42", f"генерация d42-схем для операций {keys}") from exc
 
     from .errors import UnsupportedConstructError
 
     files: list[Artifact] = []
-    disabled: dict[str, str] = {}
+    disabled: dict[str, dict[str, str]] = {}
+    cuts: list[tuple[str, str, str, str]] = []
+    dropped: list[tuple[str, str, str, str, str]] = []
     for built in needed:
         section = built.document["d42"]
-        rendered: list[Artifact] = []
-        try:
-            for direction, definitions in (
-                ("request", built.request_definitions),
-                ("response", built.response_definitions),
-            ):
-                module = section.get(f"{direction}_module")
-                if not module:
-                    continue
-                exports = _d42_exports(built, direction)
-                names = {_d42_variable(name) for name, _ in definitions}
-                rendered.append(
-                    Artifact(
-                        path=f"_d42/{module}.py",
-                        content=render_module(
-                            module_docstring=(
-                                f"Generated d42-схемы операции ``{built.contract.key}`` "
-                                f"({direction})."
-                            ),
-                            definitions=dict(definitions),
-                            exports={
-                                name: node for name, node in exports.items() if name not in names
-                            },
-                        ),
-                    )
+        for direction, definitions, roots in (
+            ("request", built.request_definitions, _d42_roots(built, "request")),
+            ("response", built.response_definitions, _d42_roots(built, "response")),
+        ):
+            module = section.get(f"{direction}_module")
+            if not module:
+                continue
+            exports = _d42_exports(built, direction)
+            names = {_d42_variable(name) for name, _ in definitions}
+            try:
+                content = render_module(
+                    module_docstring=(
+                        f"Generated d42-схемы операции ``{built.contract.key}`` ({direction})."
+                    ),
+                    definitions=dict(definitions),
+                    exports={name: node for name, node in exports.items() if name not in names},
+                    roots=roots,
                 )
-        except UnsupportedConstructError as error:
-            disabled[built.contract.key] = error.base_message
-            continue
-        files.extend(rendered)
+                notes = module_notes(definitions=dict(definitions), roots=roots)
+            except UnsupportedConstructError as error:
+                disabled.setdefault(built.contract.key, {})[direction] = error.base_message
+                continue
+            files.append(Artifact(path=f"_d42/{module}.py", content=content))
+            key = built.contract.key
+            cuts.extend((key, direction, owner, target) for owner, target in notes.cuts)
+            dropped.extend(
+                (key, direction, note.where, note.branch, note.reason) for note in notes.dropped
+            )
 
     if files:
         files.append(
@@ -289,7 +326,14 @@ def _render_d42_modules(result: BuildResult) -> tuple[list[Artifact], dict[str, 
                 ),
             )
         )
-    return files, disabled
+    return files, disabled, cuts, dropped
+
+
+def _d42_roots(built: Any, direction: str) -> list[Any]:
+    """Корни направления в порядке контракта: от них отсекаются циклы."""
+    if direction == "request":
+        return [body.schema for body in built.contract.request.bodies]
+    return [response.body for response in built.contract.responses if response.body is not None]
 
 
 def _d42_variable(definition_name: str) -> str:

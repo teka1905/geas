@@ -547,11 +547,17 @@ def _cmd_update(args: argparse.Namespace) -> int:
     for built in result.operations:
         for reason in built.unsupported:
             print(f"  {built.contract.key}: не поддержано — {reason}")
-        if built.recursive:
-            print(
-                f"  {built.contract.key}: контракт рекурсивен, d42-схемы не генерируются "
-                f"(JSON Schema и валидация работают)"
-            )
+    for key, direction, owner, target in artifacts.d42_cycle_cuts:
+        print(
+            f"  {key} ({direction}): цикл отсечён на ссылке {owner} -> {target}; "
+            f"этот узел d42 проверяет по JSON Schema"
+        )
+    for key, direction, where, branch, reason in artifacts.d42_dropped_branches:
+        print(
+            f"  {key} ({direction}): ветка {branch} в allOf {where} выброшена из d42 — "
+            f"{reason}; по контракту она не допускает ни одного значения, проверьте "
+            f"спецификацию"
+        )
     return EXIT_OK
 
 
