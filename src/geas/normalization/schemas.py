@@ -767,7 +767,7 @@ class SchemaNormalizer:
                 return merged
             return AllOfNode(origin=frame.origin, parts=conjuncts)
 
-        discriminator = self._normalize_discriminator(frame, node, tuple(parts))
+        discriminator = self._normalize_discriminator(frame, node, raw_parts, tuple(parts))
         return UnionNode(
             origin=frame.origin,
             kind=UnionKind.ONE_OF if key == "oneOf" else UnionKind.ANY_OF,
@@ -895,7 +895,11 @@ class SchemaNormalizer:
         )
 
     def _normalize_discriminator(
-        self, frame: _Frame, node: dict[str, Any], variants: tuple[SchemaNode, ...]
+        self,
+        frame: _Frame,
+        node: dict[str, Any],
+        raw_variants: list[Any],
+        variants: tuple[SchemaNode, ...],
     ) -> Discriminator | None:
         raw = node.get("discriminator")
         if raw is None:
@@ -915,19 +919,23 @@ class SchemaNormalizer:
         raw_mapping = raw.get("mapping") or {}
         if not isinstance(raw_mapping, dict):
             self._fail(frame, "discriminator.mapping должен быть объектом")
-        variant_names = {v.name for v in variants if isinstance(v, RefNode)}
-        mapping: list[tuple[str, str]] = []
+        variant_indices: dict[str, int] = {}
+        for index, (raw, variant) in enumerate(zip(raw_variants, variants, strict=True)):
+            name = _variant_definition_name(raw, variant)
+            if name is not None:
+                variant_indices.setdefault(name, index)
+        mapping: list[tuple[str, int]] = []
         for value, target in sorted(raw_mapping.items()):
             if not isinstance(value, str) or not isinstance(target, str):
                 self._fail(frame, "discriminator.mapping: ожидались строки")
             name = target.rsplit("/", 1)[-1]
-            if name not in variant_names:
+            if name not in variant_indices:
                 self._fail(
                     frame,
                     f"discriminator.mapping[{value!r}] указывает на {target!r}, "
-                    f"которого нет среди вариантов {sorted(variant_names)}",
+                    f"которого нет среди вариантов {sorted(variant_indices)}",
                 )
-            mapping.append((value, name))
+            mapping.append((value, variant_indices[name]))
         return Discriminator(property_name=str(property_name), mapping=tuple(mapping))
 
     # --------------------------------------------------------- простые узлы
@@ -1406,6 +1414,20 @@ class SchemaNormalizer:
             )
         self._fail(frame, f"{exclusive_key} должен быть булевым")
         raise AssertionError("unreachable")
+
+
+def _variant_definition_name(raw: Any, variant: SchemaNode) -> str | None:
+    """Имя определения, на которое ссылается вариант объединения, — для ``mapping``.
+
+    Обычно вариант — ссылка, и имя берётся у неё. На пути waiver'а ``$ref``
+    разворачивается по месту и ссылкой быть перестаёт; тогда имя берётся из
+    исходного ``$ref``, как и у цели ``mapping``.
+    """
+    if isinstance(variant, RefNode):
+        return variant.name
+    if isinstance(raw, dict) and isinstance(raw.get("$ref"), str):
+        return str(raw["$ref"]).rsplit("/", 1)[-1]
+    return None
 
 
 def _with_nullable(node: SchemaNode, nullable: bool) -> SchemaNode:

@@ -38,6 +38,16 @@ JSON-Schema-проверке. Единственный побочный эффе
 ``RuntimeError``, если уникальных значений физически не хватает
 (``schema.list(schema.bool).len(5).unique()``); это громкий отказ, а не тихая порча.
 
+``number`` → ``schema.any(schema.float, json_int)`` — **точно**. В JSON Schema
+``number`` включает целые, а d42 ``schema.float`` целое не принимает, ``schema.int``
+— дробное; единого числового типа в d42 нет. Целочисленная ветка —
+:data:`~geas.integrations.d42.json_int.json_int`: ``schema.int`` без ``bool``
+(``True`` в Python — тоже ``int``, а для JSON Schema это не число). Границы
+действуют на обе ветки, у целой — округлённые внутрь (``minimum: 0.5`` → ``.min(1)``);
+если целых в диапазоне нет, остаётся одна ``schema.float``. Литерал ``enum`` со
+значением ``1`` или ``1.0`` даёт оба литерала: ``float(1.0)`` и ``json_int(1)``. Первой
+всегда идёт ``float``: фикстура проецируется на первый вариант и остаётся дробной.
+
 ``format`` (``date-time``, ``email``, ``uuid``, ...) в d42 не переносится: d42 его
 не проверяет, а подделывать проверку строкой-заглушкой значило бы соврать про
 контракт. ``format`` остаётся на JSON Schema.
@@ -109,6 +119,7 @@ d42 не развернул, проверяет JSON Schema. Порядок об
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -155,6 +166,7 @@ from .intersection import (
     MissingDefinitionError,
     distribute,
 )
+from .json_int import json_int
 from .recursion import RecursionContract
 from .typed_dict import typed_dict
 
@@ -232,6 +244,10 @@ _NONE_PLAN = _Leaf(base="none")
 
 #: План «любое значение»: ключ, который ``required`` называет без схемы.
 _ANY_PLAN = _Leaf(base="any")
+
+#: База листа целочисленной ветки ``number``: не атрибут ``schema``, а
+#: :data:`~geas.integrations.d42.json_int.json_int`.
+_JSON_INT = "json_int"
 
 
 @dataclass(frozen=True, slots=True)
@@ -644,7 +660,16 @@ def _plan_number(node: NumberNode, path: ContractPath, definition: str | None) -
         _require_enum(node, node.enum, path, definition)
         for value in node.enum:
             _check_number_value(node, float(value), minimum, maximum, path, definition)
-        return _literals("float", tuple(float(value) for value in node.enum))
+        # 1 и 1.0 — одно значение enum. Сначала все float, потом целые: проекция
+        # фикстуры списка с uniqueItems берёт первые N вариантов, а 1 и 1.0 d42
+        # считает дубликатами.
+        floats = tuple(dict.fromkeys(float(value) for value in node.enum))
+        integers = tuple(int(value) for value in floats if value.is_integer())
+        leaves = (
+            *(_Leaf(base="float", literal=value) for value in floats),
+            *(_Leaf(base=_JSON_INT, literal=value) for value in integers),
+        )
+        return leaves[0] if len(leaves) == 1 else _UnionPlan(variants=leaves)
 
     if node.multiple_of is not None:
         raise _error(
@@ -657,7 +682,15 @@ def _plan_number(node: NumberNode, path: ContractPath, definition: str | None) -
         )
     if minimum is not None and maximum is not None:
         _require_range(node, minimum, maximum, "minimum", path, definition)
-    return _Leaf(base="float", calls=_bound_calls(minimum, maximum))
+    fractional = _Leaf(base="float", calls=_bound_calls(minimum, maximum))
+    int_minimum = None if minimum is None else math.ceil(minimum)
+    int_maximum = None if maximum is None else math.floor(maximum)
+    if int_minimum is not None and int_maximum is not None and int_minimum > int_maximum:
+        return fractional
+    # float — первым: проекция фикстуры берёт первый вариант.
+    return _UnionPlan(
+        variants=(fractional, _Leaf(base=_JSON_INT, calls=_bound_calls(int_minimum, int_maximum)))
+    )
 
 
 def _plan_array(
@@ -1042,7 +1075,7 @@ def build(
             )
         return contract.ref(plan.name)
     if isinstance(plan, _Leaf):
-        result: Any = getattr(schema, plan.base)
+        result: Any = json_int if plan.base == _JSON_INT else getattr(schema, plan.base)
         if not isinstance(plan.literal, _NoLiteral):
             result = result(plan.literal)
         for name, args in plan.calls:

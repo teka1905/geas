@@ -1,0 +1,106 @@
+# type: number в d42: целые и дробные значения, границы, enum, nullable, uniqueItems.
+#
+# Variable повторяет типизированное значение кастомной переменной: oneOf с
+# discriminator, где NUMBER несёт число, а NUMBER_LIST — массив чисел. Остальные
+# поля Variable — по одному на каждое ограничение number.
+openapi: "3.0.3"
+
+info:
+  title: Numbers fixture
+  version: "1.0.0"
+
+paths:
+  /variables:
+    post:
+      operationId: addVariable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Variable"
+      responses:
+        "200":
+          description: Сохранённая переменная
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Variable"
+
+components:
+  schemas:
+    Variable:
+      type: object
+      required: [name, value]
+      properties:
+        name:
+          type: string
+        value:
+          $ref: "#/components/schemas/TypedValue"
+        ratio:
+          type: number
+          minimum: 0.5
+          maximum: 2.5
+        fraction:
+          type: number
+          minimum: 0.1
+          maximum: 0.9
+        weight:
+          type: number
+          format: double
+          minimum: 0
+        level:
+          type: number
+          enum: [0.5, 1, 2]
+        score:
+          type: number
+          nullable: true
+        count:
+          type: integer
+        ranks:
+          type: array
+          minItems: 2
+          uniqueItems: true
+          items:
+            type: number
+            enum: [1, 2]
+    TypedValue:
+      oneOf:
+        - $ref: "#/components/schemas/NumberValue"
+        - $ref: "#/components/schemas/NumberListValue"
+        - $ref: "#/components/schemas/StringValue"
+      discriminator:
+        propertyName: type
+        mapping:
+          NUMBER: "#/components/schemas/NumberValue"
+          NUMBER_LIST: "#/components/schemas/NumberListValue"
+          STRING: "#/components/schemas/StringValue"
+    NumberValue:
+      type: object
+      required: [type, value]
+      properties:
+        type:
+          type: string
+          enum: [NUMBER]
+        value:
+          type: number
+    NumberListValue:
+      type: object
+      required: [type, value]
+      properties:
+        type:
+          type: string
+          enum: [NUMBER_LIST]
+        value:
+          type: array
+          items:
+            type: number
+    StringValue:
+      type: object
+      required: [type, value]
+      properties:
+        type:
+          type: string
+          enum: [STRING]
+        value:
+          type: string

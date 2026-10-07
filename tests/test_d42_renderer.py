@@ -396,7 +396,15 @@ def test_all_is_sorted_and_lists_every_public_name() -> None:
     listed = re.findall(r'"(\w+)"', names.group(1))
     assert listed == sorted(listed)
     # ``exec`` возвращает и служебные имена модуля: их не должно быть в __all__.
-    service_names = {"__builtins__", "__doc__", "__all__", "annotations", "optional", "schema"}
+    service_names = {
+        "__builtins__",
+        "__doc__",
+        "__all__",
+        "annotations",
+        "json_int",
+        "optional",
+        "schema",
+    }
     assert set(listed) == set(execute(source)) - service_names
 
 

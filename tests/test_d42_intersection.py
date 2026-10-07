@@ -639,14 +639,14 @@ PETS = {
 }
 
 
-def pet(*kinds: str, required: bool = True, mapping: tuple[tuple[str, str], ...] = ()) -> AllOfNode:
+def pet(*kinds: str, required: bool = True, mapping: tuple[tuple[str, int], ...] = ()) -> AllOfNode:
     union = UnionNode(
         origin=ORIGIN,
         kind=UnionKind.ONE_OF,
         variants=(ref("Cat"), ref("Dog")),
         discriminator=Discriminator(
             property_name="petType",
-            mapping=mapping or (("cat", "Cat"), ("dog", "Dog")),
+            mapping=mapping or (("cat", 0), ("dog", 1)),
         ),
     )
     base = obj(prop("petType", enum(*kinds) if kinds else string(), required=required))
@@ -701,7 +701,7 @@ def test_discriminator_property_is_required_in_every_branch() -> None:
 
 def test_variant_left_without_discriminator_values_is_dropped_and_named() -> None:
     """Все значения ``enum`` отданы другим вариантам: ветка не допускает ни одного значения."""
-    distribution = distribute(pet("cat", mapping=(("cat", "Cat"),)), PETS)
+    distribution = distribute(pet("cat", mapping=(("cat", 0),)), PETS)
 
     assert [item.branch for item in distribution.dropped] == ["Dog"]
     assert "discriminator" in distribution.dropped[0].reason
