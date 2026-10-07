@@ -78,7 +78,14 @@ from collections.abc import Mapping
 from typing import Any
 
 from d42.declaration import GenericSchema
-from d42.declaration.types import AnySchema, DictSchema, ListSchema, NoneSchema, Schema
+from d42.declaration.types import (
+    AnySchema,
+    DictSchema,
+    IntSchema,
+    ListSchema,
+    NoneSchema,
+    Schema,
+)
 from niltype import Nil
 
 from geas.errors import ContractOverlayError
@@ -272,8 +279,8 @@ def _check_compatible(generated: GenericSchema, manual: GenericSchema, where: st
             )
         return
 
-    allowed = {type(item) for item in _branches(generated)}
-    unexpected = [item for item in _branches(manual) if type(item) not in allowed]
+    allowed = {_kind(item) for item in _branches(generated)}
+    unexpected = [item for item in _branches(manual) if _kind(item) not in allowed]
     if unexpected:
         expected = ", ".join(sorted(item.__name__ for item in allowed))
         raise ContractOverlayError(
@@ -281,6 +288,11 @@ def _check_compatible(generated: GenericSchema, manual: GenericSchema, where: st
             f"Ожидалось: {expected}; получено: "
             f"{', '.join(type(item).__name__ for item in unexpected)}"
         )
+
+
+def _kind(node: GenericSchema) -> type[GenericSchema]:
+    """Тип схемы для сверки overlay'я: ``json_int`` и ``schema.int`` — один вид."""
+    return IntSchema if isinstance(node, IntSchema) else type(node)
 
 
 def _branches(node: GenericSchema) -> tuple[GenericSchema, ...]:

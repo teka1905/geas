@@ -226,6 +226,19 @@ def _object(node: ObjectNode) -> dict[str, Any]:
     return schema
 
 
+def _mapped_variant(variant: SchemaNode) -> dict[str, Any]:
+    """Схема в ``then`` для значения ``mapping``.
+
+    Вариант-ссылка даёт голый ``$ref`` на определение: nullable-маркер ссылки
+    сюда не переносится — объект с полем-дискриминатором ``null`` не бывает.
+    Вариант, развёрнутый по месту waiver'ом, своего определения не имеет и
+    подставляется целиком, вместе с послаблением.
+    """
+    if isinstance(variant, RefNode):
+        return {"$ref": f"#/$defs/{variant.name}"}
+    return node_to_json_schema(variant)
+
+
 def _union(node: UnionNode) -> dict[str, Any]:
     keyword = "oneOf" if node.kind is UnionKind.ONE_OF else "anyOf"
     variants = [node_to_json_schema(variant) for variant in node.variants]
@@ -247,8 +260,8 @@ def _union(node: UnionNode) -> dict[str, Any]:
                     "required": [discriminator.property_name],
                     "properties": {discriminator.property_name: {"const": value}},
                 },
-                "then": {"$ref": f"#/$defs/{target}"},
+                "then": _mapped_variant(node.variants[index]),
             }
-            for value, target in discriminator.mapping
+            for value, index in discriminator.mapping
         ]
     return schema

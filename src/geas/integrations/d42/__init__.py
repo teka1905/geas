@@ -14,7 +14,9 @@
   листа с сохранением контракта;
 * :func:`build_fixture` — детерминированная генерация значения по схеме;
 * :class:`RecursionContract` и :class:`RecursiveRefSchema` — отсечка цикла в
-  рекурсивных контрактах (см. :mod:`geas.integrations.d42.recursion`).
+  рекурсивных контрактах (см. :mod:`geas.integrations.d42.recursion`);
+* :data:`json_int` / :class:`JsonIntSchema` — целочисленная ветка ``number``:
+  ``schema.int`` без ``bool``.
 
 Нужна d42 не ниже 2.3.0: интеграция опирается на ``optional.absent``
 (``d42.declaration.types.is_absent``). На более старой d42 импорт падает
@@ -46,6 +48,7 @@ except ImportError as error:
 
 from geas.integrations.d42.converter import to_d42
 from geas.integrations.d42.fixtures import build_fixture
+from geas.integrations.d42.json_int import JsonIntSchema, json_int
 from geas.integrations.d42.overlays import EACH, overlay_generators
 from geas.integrations.d42.recursion import RecursionContract, RecursiveRefSchema
 from geas.integrations.d42.renderer import render_expression, render_module
@@ -53,10 +56,12 @@ from geas.integrations.d42.typed_dict import TypedDictSchema, typed_dict
 
 __all__ = [
     "EACH",
+    "JsonIntSchema",
     "RecursionContract",
     "RecursiveRefSchema",
     "TypedDictSchema",
     "build_fixture",
+    "json_int",
     "overlay_generators",
     "render_expression",
     "render_module",

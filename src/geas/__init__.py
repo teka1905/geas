@@ -46,7 +46,7 @@ from .runtime import (
 )
 
 #: Версия дистрибутива. Попадает в ``_generated.json`` как версия генератора.
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __all__ = [
     "ArtifactDriftError",

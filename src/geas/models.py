@@ -254,8 +254,10 @@ class Discriminator:
     """
 
     property_name: str
-    #: Значение → имя определения в ``definitions`` бандла.
-    mapping: tuple[tuple[str, str], ...]
+    #: Значение → индекс варианта в ``variants`` объединения. Индекс, а не имя
+    #: определения: вариант на пути waiver'а разворачивается по месту и своего
+    #: определения в бандле не имеет.
+    mapping: tuple[tuple[str, int], ...]
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

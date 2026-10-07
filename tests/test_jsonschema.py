@@ -164,7 +164,7 @@ def test_discriminator_becomes_a_real_constraint() -> None:
         origin=ORIGIN,
         kind=UnionKind.ONE_OF,
         variants=(RefNode(origin=ORIGIN, name="Alpha"), RefNode(origin=ORIGIN, name="Beta")),
-        discriminator=Discriminator(property_name="kind", mapping=(("a", "Alpha"), ("b", "Beta"))),
+        discriminator=Discriminator(property_name="kind", mapping=(("a", 0), ("b", 1))),
     )
     schema = _schema(node, (("Alpha", alpha), ("Beta", beta)))
 

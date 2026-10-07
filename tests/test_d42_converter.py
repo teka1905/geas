@@ -29,6 +29,7 @@ from geas.errors import (
     UnsupportedConstructError,
 )
 from geas.integrations.d42.converter import to_d42
+from geas.integrations.d42.json_int import json_int
 from geas.integrations.d42.typed_dict import typed_dict
 from geas.models import (
     AdditionalProperties,
@@ -168,15 +169,15 @@ def test_integer_enum_becomes_int_literals() -> None:
     assert to_d42(node, {}) == schema.any(schema.int(1), schema.int(2), schema.int(3))
 
 
-def test_number_bounds_become_float_min_max() -> None:
+def test_number_bounds_apply_to_float_and_integer_branches() -> None:
     node = NumberNode(origin=ORIGIN, minimum=0, maximum=1)
-    assert to_d42(node, {}) == schema.float.min(0.0).max(1.0)
+    assert to_d42(node, {}) == schema.any(schema.float.min(0.0).max(1.0), json_int.min(0).max(1))
 
 
-def test_number_enum_values_are_coerced_to_float() -> None:
-    """``enum: [0.5, 1]`` — в d42 это ``schema.float``, а не смесь int и float."""
+def test_number_enum_values_become_float_and_integer_literals() -> None:
+    """``enum: [0.5, 1]`` — ``1`` допускается и как ``1``, и как ``1.0``."""
     node = NumberNode(origin=ORIGIN, enum=(0.5, 1))
-    assert to_d42(node, {}) == schema.any(schema.float(0.5), schema.float(1.0))
+    assert to_d42(node, {}) == schema.any(schema.float(0.5), schema.float(1.0), json_int(1))
 
 
 def test_integer_multiple_of_is_accepted_together_with_a_consistent_enum() -> None:

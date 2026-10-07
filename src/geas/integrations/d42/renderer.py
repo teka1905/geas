@@ -57,6 +57,7 @@ from typing import Any
 
 from geas.errors import ArtifactError, NamespaceCollisionError, RefResolutionError
 from geas.integrations.d42.converter import (
+    _JSON_INT,
     DroppedBranchNote,
     _Cut,
     _DictPlan,
@@ -93,6 +94,7 @@ _GENERATED_NOTICE = (
 _HEADER = "from __future__ import annotations\n\nfrom d42 import optional, schema\n"
 _TYPED_DICT_IMPORT = "from geas.integrations.d42.typed_dict import typed_dict\n"
 _RECURSION_IMPORT = "from geas.integrations.d42.recursion import RecursionContract\n"
+_JSON_INT_IMPORT = "from geas.integrations.d42.json_int import json_int\n"
 
 #: Имя переменной модуля с контрактом рекурсии. Не пересекается с generated-именами:
 #: у определений и экспортов обязательный суффикс ``Schema``.
@@ -145,6 +147,8 @@ def render_module(
 
     all_plans = [*plans.values(), *export_plans.values()]
     header = _HEADER
+    if any(_uses_json_int(plan) for plan in all_plans):
+        header += _JSON_INT_IMPORT
     if cut:
         header += _RECURSION_IMPORT
     if any(_uses_typed_dict(plan) for plan in all_plans):
@@ -344,7 +348,7 @@ def _single(plan: _Plan, refs: Mapping[str, str]) -> str:
     if isinstance(plan, _Cut):
         return f"{_RECURSION}.ref({_literal(plan.name)})"
     if isinstance(plan, _Leaf):
-        base = f"schema.{plan.base}"
+        base = plan.base if plan.base == _JSON_INT else f"schema.{plan.base}"
         if not isinstance(plan.literal, _NoLiteral):
             base = f"{base}({_literal(plan.literal)})"
         return base + _calls(plan.calls)
@@ -416,6 +420,21 @@ def _uses_typed_dict(plan: _Plan) -> bool:
         return _uses_typed_dict(plan.items)
     if isinstance(plan, _UnionPlan):
         return any(_uses_typed_dict(variant) for variant in plan.variants)
+    return False
+
+
+def _uses_json_int(plan: _Plan) -> bool:
+    """Есть ли целочисленная ветка ``number`` в плане или его дочерних узлах."""
+    if isinstance(plan, _Leaf):
+        return plan.base == _JSON_INT
+    if isinstance(plan, _DictPlan):
+        return any(_uses_json_int(child) for _, child, _ in plan.entries) or (
+            plan.additional is not None and _uses_json_int(plan.additional)
+        )
+    if isinstance(plan, _ListPlan):
+        return _uses_json_int(plan.items)
+    if isinstance(plan, _UnionPlan):
+        return any(_uses_json_int(variant) for variant in plan.variants)
     return False
 
 

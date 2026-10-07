@@ -374,7 +374,7 @@ class _Intersector:
             nullable = nullable or resolved.nullable
         if isinstance(target, UnionNode):
             alternatives: list[_Branch] = [
-                _Branch(_variant_label(target, index), variant, _discriminator_of(target, variant))
+                _Branch(_variant_label(target, index), variant, _discriminator_of(target, index))
                 for index, variant in enumerate(target.variants)
             ]
         elif isinstance(target, AllOfNode):
@@ -1013,20 +1013,17 @@ def _declared(prop: PropertySpec | None, fallback: SchemaNode) -> SchemaNode:
     return prop.schema if prop is not None else fallback
 
 
-def _discriminator_of(
-    union: UnionNode, variant: SchemaNode
-) -> tuple[tuple[str, frozenset[str]], ...]:
+def _discriminator_of(union: UnionNode, index: int) -> tuple[tuple[str, frozenset[str]], ...]:
     """Ограничение ``discriminator`` для ветки варианта: свойство и чужие значения.
 
-    ``mapping`` ведёт в определения, поэтому инлайн-варианту не принадлежит ни одно
-    значение. Неявное отображение по имени схемы JSON Schema контракта не
-    проверяет (``jsonschema_gen``), и здесь его тоже нет.
+    ``mapping`` ведёт в варианты по индексу, поэтому значения есть и у варианта,
+    развёрнутого по месту waiver'ом. Неявное отображение по имени схемы JSON
+    Schema контракта не проверяет (``jsonschema_gen``), и здесь его тоже нет.
     """
     discriminator = union.discriminator
     if discriminator is None:
         return ()
-    own = variant.name if isinstance(variant, RefNode) else None
-    foreign = frozenset(value for value, target in discriminator.mapping if target != own)
+    foreign = frozenset(value for value, target in discriminator.mapping if target != index)
     return ((discriminator.property_name, foreign),)
 
 
