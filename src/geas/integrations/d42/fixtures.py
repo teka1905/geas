@@ -88,7 +88,7 @@ from typing import Any
 
 from d42 import ValidationException, validate_or_fail
 from d42.declaration import GenericSchema
-from d42.declaration.types import AnySchema, DictSchema, ListSchema, Schema
+from d42.declaration.types import AnySchema, DictSchema, FloatSchema, ListSchema, Schema
 from d42.generation import Generator, Random, RegexGenerator
 from d42.utils import is_ellipsis
 from niltype import Nil, Nilable
@@ -98,6 +98,7 @@ from geas.errors import (
     UnsupportedConstructError,
     ValidationFailedError,
 )
+from geas.integrations.d42.json_int import JsonIntSchema
 from geas.integrations.d42.overlays import original_contract
 
 __all__ = ["DEFAULT_SEED", "build_fixture", "project_first_variant", "validate_overlay_fixture"]
@@ -224,6 +225,7 @@ def _project(schema: GenericSchema, *, keep: int) -> GenericSchema:
         types = schema.props.types
         if types is Nil or not types:
             return schema
+        types = _without_integer_twins(tuple(types))
         selected = tuple(types[:keep]) or (types[0],)
         if len(selected) == 1:
             return _project(selected[0], keep=1)
@@ -243,6 +245,27 @@ def _project(schema: GenericSchema, *, keep: int) -> GenericSchema:
         return _project_list(schema)
 
     return schema
+
+
+def _without_integer_twins(types: tuple[GenericSchema, ...]) -> tuple[GenericSchema, ...]:
+    """Убрать целую ветку ``number`` — ``json_int`` сразу за нелитеральной ``float``.
+
+    Unique-список оставляет первые N вариантов, и без этого в проекцию ``number``
+    попадала бы целая ветка: генератор тратил бы ``random`` иначе, и фикстура
+    сдвигалась бы. Литералы ``enum`` не трогаются: целые там идут после всех float.
+    """
+    kept: list[GenericSchema] = []
+    for item in types:
+        previous = kept[-1] if kept else None
+        if (
+            isinstance(item, JsonIntSchema)
+            and item.props.value is Nil
+            and isinstance(previous, FloatSchema)
+            and previous.props.value is Nil
+        ):
+            continue
+        kept.append(item)
+    return tuple(kept)
 
 
 def _project_list(schema: ListSchema) -> GenericSchema:

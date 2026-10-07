@@ -32,7 +32,7 @@ from geas.integrations.d42 import (
     to_d42,
 )
 from geas.integrations.d42.fixtures import validate_overlay_fixture
-from geas.models import IntegerNode, NumberNode, Origin
+from geas.models import ArrayNode, IntegerNode, NumberNode, Origin
 from support import Project, make_project, spec
 
 ORIGIN = Origin(source="numbers.yaml", pointer="/components/schemas/Demo")
@@ -393,3 +393,44 @@ def test_float_and_int_branch_types() -> None:
     number = to_d42(NumberNode(origin=ORIGIN), {})
 
     assert [type(item) for item in number.props.types] == [FloatSchema, JsonIntSchema]
+
+
+UNIQUE_NUMBER_LISTS = {
+    "без границ": (
+        ArrayNode(origin=ORIGIN, items=NumberNode(origin=ORIGIN), min_items=3, unique_items=True),
+        schema.list(schema.float).len(3, ...).unique(),
+    ),
+    "с границами": (
+        ArrayNode(
+            origin=ORIGIN,
+            items=NumberNode(origin=ORIGIN, minimum=0, maximum=10),
+            min_items=2,
+            unique_items=True,
+        ),
+        schema.list(schema.float.min(0.0).max(10.0)).len(2, ...).unique(),
+    ),
+    "nullable": (
+        ArrayNode(
+            origin=ORIGIN,
+            items=NumberNode(origin=ORIGIN, minimum=0, maximum=10, nullable=True),
+            min_items=2,
+            unique_items=True,
+        ),
+        schema.list(schema.any(schema.float.min(0.0).max(10.0), schema.none)).len(2, ...).unique(),
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("node", "float_only"), list(UNIQUE_NUMBER_LISTS.values()), ids=list(UNIQUE_NUMBER_LISTS)
+)
+@pytest.mark.parametrize("seed", [0, 1, 7])
+def test_unique_number_list_fixture_matches_the_float_only_schema(
+    node: ArrayNode, float_only: Any, seed: int
+) -> None:
+    """Unique-список берёт первые N вариантов, но целая ветка ``number`` в них не попадает.
+
+    Фикстура совпадает с фикстурой той же схемы с одной ``schema.float`` — то есть с
+    тем, что давал перевод ``number`` до целой ветки.
+    """
+    assert build_fixture(to_d42(node, {}), seed=seed) == build_fixture(float_only, seed=seed)
