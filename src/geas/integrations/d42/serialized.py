@@ -34,7 +34,7 @@
   соответствует один пустой элемент, а не пустой массив — как и при разборе
   запроса, поэтому ``% []`` отклоняется.
 * **Место запроса** (``location``) добавляет ограничение самого текста, которое
-  накладывает транспорт: сегмент path не бывает пустым, у значения заголовка и
+  накладывает транспорт: сегмент path не бывает пустым и не содержит ``/``, у значения заголовка и
   cookie нет пробелов по краям (HTTP их срезает), в cookie нет ``;`` (им
   разделяются пары). Разобранный запрос таких значений не содержит, поэтому
   проверка не становится уже контракта, а ``fake()`` не выдаёт значение, которое
@@ -73,7 +73,7 @@ from niltype import Nil
 from th import PathHolder
 
 from geas.errors import ValidationFailedError
-from geas.runtime.validation import MAX_VALUE_REPR, decode_scalar, encode_scalar
+from geas.runtime.validation import decode_scalar, encode_scalar, safe_repr
 
 __all__ = [
     "SerializedSchema",
@@ -88,7 +88,7 @@ _GENERATION_ATTEMPTS = 100
 
 #: Места запроса, которые ограничивают сам текст значения, и описание ограничения.
 _LOCATION_TEXT = {
-    "path": "a non-empty path segment",
+    "path": "a non-empty path segment without '/'",
     "header": "a header value without leading or trailing whitespace",
     "cookie": "a cookie value without leading or trailing whitespace and without ';'",
 }
@@ -260,12 +260,12 @@ class SerializedValueValidationError(ValidationError):
         where = format_path(self.path) if callable(format_path) else f" at {self.path}"
         return (
             f"Value {type(self.actual_value)}{where} must be a request parameter written as "
-            f"{self.expected}, but {_safe_repr(self.actual_value)} given"
+            f"{self.expected}, but {safe_repr(self.actual_value)} given"
         )
 
     def __repr__(self) -> str:
         return (
-            f"{self.__class__.__name__}({self.path!r}, {_safe_repr(self.actual_value)}, "
+            f"{self.__class__.__name__}({self.path!r}, {safe_repr(self.actual_value)}, "
             f"{self.expected!r})"
         )
 
@@ -366,7 +366,9 @@ def _list_item_kind(inner: ListSchema) -> str:
 def _fits_location(text: str, location: str) -> bool:
     """Переживёт ли текст транспорт места запроса без изменений."""
     if location == "path":
-        return text != ""
+        # Записанный путь уже раскодирован: %2F стал разделителем, и значения со
+        # слэшем внутри одного сегмента в перехваченном запросе не бывает.
+        return text != "" and "/" not in text
     if text != text.strip():
         return False
     return location != "cookie" or ";" not in text
@@ -409,8 +411,3 @@ def _typed_scalar(value: Any, kind: str) -> Any:
     if not isinstance(value, str):
         raise _TypeMismatchError(value, str)
     return value
-
-
-def _safe_repr(value: Any) -> str:
-    text = repr(value)
-    return text if len(text) <= MAX_VALUE_REPR else text[: MAX_VALUE_REPR - 1] + "…"

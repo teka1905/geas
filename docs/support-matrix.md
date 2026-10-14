@@ -264,10 +264,10 @@ JSON Schema отсечённых определений встраивается
 | Параметр | d42-схема значения |
 | --- | --- |
 | `string` в query | `schema.str` с `enum`, `pattern`, границами длины; `format` не переносится |
-| `string` в path, header, cookie | `serialized(schema.str..., location=...)`: сегмент path непустой, у заголовка и cookie нет пробелов по краям, в cookie нет `;` |
+| `string` в path, header, cookie | `serialized(schema.str..., location=...)`: сегмент path непустой и без `/`, у заголовка и cookie нет пробелов по краям, в cookie нет `;` |
 | `string`, `nullable: true` | дополнительно `schema.str("")`: пустая строка разбирается в `null` (кроме path) |
 | `integer` | `serialized(schema.int...)` с границами `format`, `minimum`/`maximum` и `enum` |
-| `number` | `serialized(schema.any(schema.float..., json_int...))` — как у тел, целая запись (`"1"`) допустима; `exclusiveMinimum`/`exclusiveMaximum` не выражаются |
+| `number` | `serialized(schema.float...)`: строка всегда разбирается в `float`, поэтому целая ветка тел (`json_int`) не нужна, а запись `"1"` допустима; `exclusiveMinimum`/`exclusiveMaximum` не выражаются |
 | `boolean` | `serialized(schema.bool)`: `"true"` / `"false"` |
 | массив, `query` + `form` + `explode: true` | `schema.list(<элемент>).len(1, ...)`: повторы ключа, минимум один; у `uniqueItems` с `enum` или `boolean` верхняя граница — число значений |
 | массив одной строкой (остальные сочетания) | `serialized(schema.list(<типизированный элемент>).len(1, ...), delimiter=...)`; у строк в path и header — ещё `location` |

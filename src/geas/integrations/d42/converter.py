@@ -1241,7 +1241,7 @@ def _plan_typed_scalar(node: SchemaNode, path: ContractPath) -> _Plan:
     if isinstance(node, IntegerNode):
         return _plan_integer(node, path, None)
     if isinstance(node, NumberNode):
-        return _plan_number(node, path, None)
+        return _without_json_int(_plan_number(node, path, None))
     if isinstance(node, BooleanNode):
         return _plan_boolean(node, path, None)
     raise _error(
@@ -1252,6 +1252,22 @@ def _plan_typed_scalar(node: SchemaNode, path: ContractPath) -> _Plan:
         path,
         None,
     )
+
+
+def _without_json_int(plan: _Plan) -> _Plan:
+    """План ``number`` параметра без целой ветки.
+
+    Строка запроса разбирается в ``float`` всегда (``"7"`` → ``7.0``), поэтому целая
+    ветка ничего не добавляет к проверке, а генерации мешает: ``fake()`` выдал бы
+    ``"2"`` и ``"2.0"`` — одно значение в двух записях, и уникальный массив перестал
+    бы быть уникальным по значению.
+    """
+    if not isinstance(plan, _UnionPlan):
+        return plan
+    variants = tuple(
+        item for item in plan.variants if not (isinstance(item, _Leaf) and item.base == _JSON_INT)
+    )
+    return variants[0] if len(variants) == 1 else _UnionPlan(variants=variants)
 
 
 def _with_empty_string(plan: _Plan) -> _Plan:

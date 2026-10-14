@@ -3,14 +3,16 @@
 # getRoleLink        — форма из Tandava: int64 и строковый enum в query.
 # listItems          — каждое место (path, query, header, cookie), каждый скалярный
 #                      тип, массив повторами ключа и массивы одной строкой через
-#                      запятую, пробел и «|», nullable-строка.
+#                      запятую, пробел и «|», nullable-строка, уникальные массивы
+#                      number (2 и 2.0 — одно значение).
 # getVersion         — только path-параметры: integer с границами.
 # createNote         — тело запроса и query-параметр рядом: модули независимы.
 # searchDeep         — deepObject над скаляром, разрешённый waiver'ом: query-схема
 #                      не строится, path-схема той же операции — строится.
 # mixedCaseHeaders   — два заголовка, различающиеся только регистром.
 # transportEdges     — строки, которые транспорт мог бы изменить: пустой сегмент
-#                      path, пробел по краю заголовка и cookie, «;» в cookie.
+#                      path и «/» в нём, пробел по краю заголовка и cookie, «;» в
+#                      cookie.
 openapi: "3.0.3"
 
 info:
@@ -141,6 +143,23 @@ paths:
             items:
               type: string
               enum: [a, b]
+        - name: weights
+          in: query
+          schema:
+            type: array
+            uniqueItems: true
+            items:
+              type: number
+              enum: [1, 2]
+        - name: ratios
+          in: query
+          schema:
+            type: array
+            uniqueItems: true
+            items:
+              type: number
+              minimum: 0
+              maximum: 3
         - name: X-Trace-Id
           in: header
           schema:
@@ -244,10 +263,16 @@ paths:
         "204":
           description: Пусто
 
-  /files/{names}/{code}:
+  /files/{names}/{code}/{rest}:
     get:
       operationId: transportEdges
       parameters:
+        - name: rest
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^.+$"
         - name: names
           in: path
           required: true

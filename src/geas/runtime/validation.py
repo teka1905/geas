@@ -30,7 +30,10 @@ __all__ = [
     "decode_scalar",
     "encode_scalar",
     "json_schema_validator",
+    "json_type",
+    "safe_repr",
     "validate_instance",
+    "wire_text",
 ]
 
 #: Разделители для массивов, сериализованных одной строкой.
@@ -62,7 +65,8 @@ def _no_network(uri: str) -> Any:
 _EMPTY_REGISTRY: Registry[Any] = Registry(retrieve=_no_network)  # type: ignore[call-arg]
 
 
-def _safe_repr(value: Any) -> str:
+def safe_repr(value: Any) -> str:
+    """``repr`` значения, усечённый до :data:`MAX_VALUE_REPR` символов для текста ошибки."""
     text = repr(value)
     if len(text) > MAX_VALUE_REPR:
         return text[: MAX_VALUE_REPR - 1] + "…"
@@ -161,8 +165,8 @@ def _raise(
         "json_pointer": _pointer(error.absolute_path) or "/",
         "schema_pointer": _pointer(error.absolute_schema_path) or "/",
         "validator": str(error.validator),
-        "expected": _safe_repr(error.validator_value),
-        "actual": _safe_repr(error.instance),
+        "expected": safe_repr(error.validator_value),
+        "actual": safe_repr(error.instance),
     }
     if direction is Direction.REQUEST:
         raise RequestContractError(message, request_index=request_index, **kwargs)
@@ -188,9 +192,7 @@ def decode_parameter(
     не приводится к объявленному типу, — это ошибка контракта, а не «ну ладно,
     оставим строкой».
     """
-    kind = schema.get("type")
-    if isinstance(kind, list):
-        kind = next((item for item in kind if item != "null"), None)
+    kind, _ = json_type(schema)
 
     if kind == "array":
         items = schema.get("items") or {}
@@ -207,7 +209,7 @@ def decode_parameter(
                     operation_key=operation_key,
                     json_pointer=f"/{name}",
                     expected=f"одно значение, элементы через {ARRAY_DELIMITERS.get(style, ',')!r}",
-                    actual=_safe_repr(values),
+                    actual=safe_repr(values),
                 )
         return [
             _coerce(
@@ -229,7 +231,7 @@ def decode_parameter(
             operation_key=operation_key,
             json_pointer=f"/{name}",
             expected="одно значение",
-            actual=_safe_repr(values),
+            actual=safe_repr(values),
         )
     return _coerce(
         values[0],
@@ -252,11 +254,7 @@ def _coerce(
     request_index: int | None,
     index: int | None,
 ) -> Any:
-    kind = schema.get("type")
-    nullable = False
-    if isinstance(kind, list):
-        nullable = "null" in kind
-        kind = next((item for item in kind if item != "null"), None)
+    kind, nullable = json_type(schema)
 
     pointer = f"/{name}" if index is None else f"/{name}/{index}"
 
@@ -267,7 +265,7 @@ def _coerce(
             operation_key=operation_key,
             json_pointer=pointer,
             expected=expected,
-            actual=_safe_repr(text),
+            actual=safe_repr(text),
         )
 
     if (kind == "string" or kind is None) and nullable and text == "":
@@ -278,6 +276,17 @@ def _coerce(
         expected = str(error)
     fail(expected)
     raise AssertionError("unreachable")
+
+
+def json_type(schema: dict[str, Any] | Any) -> tuple[Any, bool]:
+    """Тип JSON Schema без ``null`` и признак, допускает ли схема ``null`` по ``type``.
+
+    ``{"type": ["string", "null"]}`` → ``("string", True)``; без ``type`` — ``(None, False)``.
+    """
+    kind = schema.get("type")
+    if isinstance(kind, list):
+        return next((item for item in kind if item != "null"), None), "null" in kind
+    return kind, False
 
 
 def decode_scalar(text: str, kind: str | None) -> Any:
@@ -329,6 +338,25 @@ def encode_scalar(value: Any) -> str:
             raise ValueError(f"у {value!r} нет записи числом в запросе")
         return float.__repr__(value)
     raise ValueError(f"у значения {type(value).__name__} нет строкового вида параметра")
+
+
+def wire_text(value: Any) -> str:
+    """Строка, которой значение закрепляется в запросе: в матчере мока и в сравнении.
+
+    Скаляры JSON — по :func:`encode_scalar` (``True`` → ``"true"``), ``None`` — пустой
+    строкой (так ``null`` записывается в запросе и так его разбирает
+    :func:`decode_parameter`), прочие объекты (``UUID``, ``date``, ``Decimal``) —
+    через ``str()``.
+
+    :raises ValueError: контейнер или число без записи (бесконечность, NaN).
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (bool, int, float, str)):
+        return encode_scalar(value)
+    if isinstance(value, (list, tuple, set, frozenset, dict, bytes, bytearray)):
+        raise ValueError(f"у {type(value).__name__} нет записи одним значением параметра")
+    return str(value)
 
 
 def wrap_validation_error(

@@ -38,13 +38,14 @@ from collections.abc import Callable, Mapping, Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
-from ...errors import ContractMockError
+from ...errors import ContractMockError, RequestContractError
 from ...models import Direction, ParameterLocation
 from ...runtime.validation import (
     ARRAY_DELIMITERS,
     decode_parameter,
-    encode_scalar,
+    json_type,
     validate_instance,
+    wire_text,
 )
 from . import backend
 
@@ -108,6 +109,7 @@ class ContractMock:
 
         self._check_path_params()
         self._query_params = self._checked_query_params()
+        self._headers = self._checked_headers()
         self._variant, self._status = self._select_variant(status, content_type)
         self._body = response
         # Шаги 3–5: сначала d42, потом независимо JSON Schema, затем статус и
@@ -122,7 +124,7 @@ class ContractMock:
     # ------------------------------------------------------------ подготовка
 
     def _check_path_params(self) -> None:
-        """Проверить, что закреплённые path-параметры описаны контрактом."""
+        """Проверить закреплённые path-параметры по контракту и перевести их в строки."""
         known = {view.name: view for view in self._operation.request.path}
         unknown = sorted(set(self._path_params) - set(known))
         if unknown:
@@ -131,91 +133,123 @@ class ContractMock:
                 f"{self._operation.path!r}. Описанные: {sorted(known)}",
                 operation_key=self._operation.key,
             )
-        for name, value in sorted(self._path_params.items()):
-            view = known[name]
-            validate_instance(
-                dict(view.json_schema),
-                value,
-                operation_key=self._operation.key,
-                direction=Direction.REQUEST,
-                part=f"path_params[{name!r}]",
-            )
+        self._path_params = {
+            name: self._pinned_text(known[name], value, part=f"path_params[{name!r}]")
+            for name, value in sorted(self._path_params.items())
+        }
 
     def _checked_query_params(self) -> dict[str, str]:
         """Перевести закреплённые query-параметры в строки матчера и проверить их по контракту.
 
         Без этой проверки значение вне ``enum`` или не того типа уходило бы в матчер
         JJ как есть: мок молча не совпадал бы ни с одним запросом, и тест падал бы
-        с «перехвачено 0», а не с указанием на параметр.
+        с «перехвачено 0», а не с указанием на параметр. Правило перевода — в
+        :meth:`_pinned_text`.
 
-        Значение сначала становится той строкой, которую сравнит матчер (``True`` →
-        ``"true"``, ``UUID`` и ``date`` — через ``str()``), и уже она разбирается по
-        контракту тем же правилом, что перехваченный запрос. У массива повторами
-        ключа строка закрепляет один повтор и проверяется по схеме элемента: матчер
-        совпадает, если совпал хотя бы один повтор. Массив одной строкой можно
-        передать списком — он склеится через разделитель стиля.
+        Параметр, которого нет в контракте, закрепить нельзя: расхождение спецификации
+        с API чинится в спецификации, а до тех пор такой параметр проверяют по
+        истории мока.
         """
         known = {view.name: view for view in self._operation.request.query}
         unknown = sorted(set(self._query_params) - set(known))
         if unknown:
             raise ContractMockError(
                 f"query_params содержит параметры {unknown}, которых нет в контракте "
-                f"операции. Описанные: {sorted(known)}",
+                f"операции. Описанные: {sorted(known)}. Такой параметр проверяйте по "
+                f"истории мока: mock.requests[i].params",
                 operation_key=self._operation.key,
             )
-        encoded: dict[str, str] = {}
-        for name, value in sorted(self._query_params.items()):
-            view = known[name]
-            json_schema = dict(view.json_schema)
-            part = f"query_params[{name!r}]"
-            array = _json_type(json_schema) == "array"
-            repeated = array and view.style == "form" and view.explode
-            text = self._query_text(
-                part,
-                value,
-                delimiter=None
-                if repeated or not array
-                else (ARRAY_DELIMITERS.get(view.style, ",")),
+        return {
+            name: self._pinned_text(known[name], value, part=f"query_params[{name!r}]")
+            for name, value in sorted(self._query_params.items())
+        }
+
+    def _checked_headers(self) -> dict[str, str]:
+        """Перевести закреплённые заголовки в строки матчера.
+
+        Заголовок, описанный контрактом (имя сравнивается без учёта регистра), проверяется
+        так же, как query-параметр. Остальные (``Authorization``, ``X-Request-Id``)
+        контракт обычно не описывает, и они закрепляются как есть — строкой.
+        """
+        known = {view.name.lower(): view for view in self._operation.request.header}
+        pinned: dict[str, str] = {}
+        for name, value in sorted(self._headers.items()):
+            part = f"headers[{name!r}]"
+            view = known.get(name.lower())
+            pinned[name] = (
+                self._pinned_text(view, value, part=part)
+                if view is not None
+                else self._matcher_text(part, value, delimiter=None)
             )
-            checked = dict(json_schema.get("items") or {}) if repeated else json_schema
+        return pinned
+
+    def _pinned_text(self, view: Any, value: Any, *, part: str) -> str:
+        """Строка, которую сравнит матчер JJ, проверенная по контракту параметра.
+
+        Значение сначала становится строкой — ``True`` → ``"true"``, ``None`` → ``""``
+        (так ``null`` записывается в запросе), ``UUID`` и ``date`` — через ``str()``, — и
+        уже она разбирается по контракту тем же правилом, что перехваченный запрос.
+        У массива повторами ключа строка закрепляет один повтор и проверяется по схеме
+        элемента: матчер совпадает, если совпал хотя бы один повтор. Массив одной
+        строкой можно передать списком — он склеится через разделитель стиля.
+        """
+        json_schema = dict(view.json_schema)
+        array = json_type(json_schema)[0] == "array"
+        repeated = (
+            array
+            and view.location is ParameterLocation.QUERY
+            and view.style == "form"
+            and view.explode
+        )
+        delimiter = None if repeated or not array else ARRAY_DELIMITERS.get(view.style, ",")
+        text = self._matcher_text(part, value, delimiter=delimiter)
+        checked = dict(json_schema.get("items") or {}) if repeated else json_schema
+        try:
             decoded = decode_parameter(
-                name=name,
-                location=ParameterLocation.QUERY,
+                name=view.name,
+                location=view.location,
                 style=view.style,
                 explode=view.explode,
                 schema=checked,
                 values=[text],
                 operation_key=self._operation.key,
             )
-            validate_instance(
-                checked,
-                decoded,
-                operation_key=self._operation.key,
-                direction=Direction.REQUEST,
-                part=part,
-            )
-            encoded[name] = text
-        return encoded
-
-    def _query_text(self, part: str, value: Any, *, delimiter: str | None) -> str:
-        """Строка, которую сравнит матчер JJ; ``delimiter`` — у массива одной строкой."""
-        if isinstance(value, (list, tuple)) and delimiter is not None:
-            return delimiter.join(self._query_text(part, item, delimiter=None) for item in value)
-        if isinstance(value, (list, tuple, set, frozenset, dict)):
+        except RequestContractError:
+            if value is not None:
+                raise
+            decoded = text
+        if value is None and decoded is not None:
+            # Пустая строка разбирается в null только у nullable-строки; у числа, флага
+            # и не-nullable строки null в запросе не записать.
             raise ContractMockError(
-                f"{part}: матчер JJ сравнивает одно значение параметра, а передан "
-                f"{type(value).__name__}. Закрепите один повтор ключа либо проверьте "
-                f"массив по истории мока",
+                f"{part}: null в запросе записывается пустой строкой, а у параметра "
+                f"{view.name!r} пустая строка не разбирается в null",
                 operation_key=self._operation.key,
             )
-        if isinstance(value, (bool, int, float, str)):
-            try:
-                return encode_scalar(value)
-            except ValueError as error:
-                raise ContractMockError(
-                    f"{part}: {error}", operation_key=self._operation.key
-                ) from None
-        return str(value)
+        validate_instance(
+            checked,
+            decoded,
+            operation_key=self._operation.key,
+            direction=Direction.REQUEST,
+            part=part,
+        )
+        return text
+
+    def _matcher_text(self, part: str, value: Any, *, delimiter: str | None) -> str:
+        """Строка матчера по :func:`~geas.runtime.validation.wire_text`.
+
+        Список склеивается через ``delimiter`` — у массива, который уходит одной строкой.
+        """
+        if isinstance(value, (list, tuple)) and delimiter is not None:
+            return delimiter.join(self._matcher_text(part, item, delimiter=None) for item in value)
+        try:
+            return wire_text(value)
+        except ValueError as error:
+            raise ContractMockError(
+                f"{part}: {error}. Матчер JJ сравнивает одно значение параметра: закрепите "
+                f"один повтор ключа либо проверьте значение по истории мока",
+                operation_key=self._operation.key,
+            ) from None
 
     def _select_variant(
         self, status: int | str | None, content_type: str | None
@@ -424,14 +458,6 @@ class ContractMock:
             f"ContractMock({self._operation.key!r}, {self._operation.method} "
             f"{path}, status={self._status})"
         )
-
-
-def _json_type(json_schema: Mapping[str, Any]) -> Any:
-    """Тип JSON Schema без ``null``: ``["array", "null"]`` → ``"array"``."""
-    kind = json_schema.get("type")
-    if isinstance(kind, list):
-        return next((item for item in kind if item != "null"), None)
-    return kind
 
 
 def _attach_note(target: BaseException, secondary: BaseException) -> None:

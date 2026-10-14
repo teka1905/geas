@@ -69,7 +69,7 @@ from th import PathHolder
 
 from geas.errors import RecursiveSchemaError, ValidationFailedError
 from geas.jsonschema_gen import JSON_SCHEMA_DIALECT
-from geas.runtime.validation import MAX_VALUE_REPR, json_schema_validator
+from geas.runtime.validation import MAX_VALUE_REPR, json_schema_validator, safe_repr
 
 __all__ = [
     "RecursionContract",
@@ -190,7 +190,7 @@ class RecursionContract:
                 json_pointer=_pointer(first.absolute_path) or "/",
                 schema_pointer=_pointer(first.absolute_schema_path) or "/",
                 validator="jsonschema",
-                actual=_safe_repr(value),
+                actual=safe_repr(value),
             )
         return value
 
@@ -334,7 +334,7 @@ class RecursiveRefValidationError(ValidationError):
 
     def __repr__(self) -> str:
         return (
-            f"{self.__class__.__name__}({self.path!r}, {_safe_repr(self.actual_value)}, "
+            f"{self.__class__.__name__}({self.path!r}, {safe_repr(self.actual_value)}, "
             f"{self.definition!r}, {_shorten(self.message)!r})"
         )
 
@@ -462,11 +462,6 @@ def _minimal(
 def _pointer(parts: Any) -> str:
     tokens = [str(item).replace("~", "~0").replace("/", "~1") for item in parts]
     return "/" + "/".join(tokens) if tokens else ""
-
-
-def _safe_repr(value: Any) -> str:
-    text = repr(value)
-    return text if len(text) <= MAX_VALUE_REPR else text[: MAX_VALUE_REPR - 1] + "…"
 
 
 def _shorten(message: str) -> str:

@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import random
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,13 @@ from d42 import fake, optional, schema, validate_or_fail
 from d42.utils import make_required
 
 from geas import Direction
-from geas.errors import ContractOverlayError, OperationLookupError, ValidationFailedError
+from geas.errors import (
+    ContractMockError,
+    ContractOverlayError,
+    OperationLookupError,
+    RequestContractError,
+    ValidationFailedError,
+)
 from geas.fingerprints import semantic_source_digest
 from geas.integrations.d42 import EACH, build_fixture, overlay_generators, serialized
 from geas.integrations.d42.serialized import SerializedSchema
@@ -225,7 +232,7 @@ def test_representation_names_the_wrapper_and_the_typed_contract() -> None:
 @pytest.mark.parametrize(
     "location, rejected, accepted",
     [
-        ("path", [""], ["a", " a b "]),
+        ("path", ["", "a/b", "/"], ["a", " a b ", "a%2Fb"]),
         ("header", [" ab", "ab ", "\tab"], ["a b", ""]),
         ("cookie", [" ab", "ab ", "a;b"], ["a b", "a=b"]),
     ],
@@ -350,6 +357,35 @@ def test_inexpressible_value_refuses_its_location_with_the_converter_reason() ->
     assert rendered.exports == (("path", "PathSchema"),)
     assert [location for location, _ in rendered.refused] == ["query"]
     assert rendered.content is not None and "QuerySchema" not in rendered.content
+
+
+def test_request_view_rejects_inconsistent_parameter_sets() -> None:
+    """Места и плоские кортежи параметров — одно и то же: расхождение — ошибка сразу."""
+    from geas.runtime.operation import ParameterSetView, ParameterView, RequestView
+
+    def view(name: str, location: ParameterLocation) -> ParameterView:
+        return ParameterView(
+            name=name,
+            location=location,
+            required=False,
+            style="form",
+            explode=True,
+            json_schema={"type": "string"},
+        )
+
+    limit = view("limit", ParameterLocation.QUERY)
+    other = view("page", ParameterLocation.QUERY)
+    query_set = ParameterSetView(location=ParameterLocation.QUERY, parameters=(limit,))
+
+    assert RequestView(query=(limit,), parameter_sets=(query_set,)).parameter_set("query")
+    with pytest.raises(ValueError, match="расходятся"):
+        RequestView(query=(other,), parameter_sets=(query_set,))
+    with pytest.raises(ValueError, match="расходятся"):
+        RequestView(parameter_sets=(query_set,))
+    with pytest.raises(ValueError, match="дважды"):
+        RequestView(query=(limit,), parameter_sets=(query_set, query_set))
+    with pytest.raises(ValueError, match="другого места"):
+        RequestView(path=(limit,))
 
 
 def test_request_view_built_by_hand_still_lists_parameter_sets() -> None:
@@ -510,9 +546,12 @@ def test_transport_edges_are_encoded_in_the_generated_module(generated: Any) -> 
         'location="path"),' in source
     )
     path = operations.main.transport_edges.d42_schema(Direction.REQUEST, part="path")
-    assert path == {"names": "a,b", "code": "x"}
-    assert path != {"names": "", "code": "x"}
-    assert path != {"names": "a", "code": ""}
+    assert path == {"names": "a,b", "code": "x", "rest": "r"}
+    assert path != {"names": "", "code": "x", "rest": "r"}
+    assert path != {"names": "a", "code": "", "rest": "r"}
+    # Записанный путь раскодирован: «/» внутри одного сегмента не бывает.
+    assert path != {"names": "a", "code": "x", "rest": "a/b"}
+    assert path != {"names": "a/b", "code": "x", "rest": "r"}
 
 
 @pytest.mark.parametrize(
@@ -545,6 +584,133 @@ def test_mock_pins_query_params_as_matcher_strings(
         query_params=query_params,
     )
     assert mock._query_params == pinned
+
+
+def test_number_parameters_have_no_integer_branch(generated: Any) -> None:
+    """Строка запроса разбирается во float всегда: целая ветка только испортила бы unique."""
+    project, operations = generated
+    source = (project.output_dir / "_d42" / "main__list_items_request_parameters.py").read_text(
+        encoding="utf-8"
+    )
+    assert "json_int" not in source
+    query = operations.main.list_items.d42_schema(Direction.REQUEST, part="query")
+    assert query == {"weights": ["1", "2.0"], "ratio": "1"}
+    assert query != {"weights": ["1", "3"]}
+    random.seed(10)
+    for _ in range(500):
+        values = fake(query)
+        for name in ("weights", "ratios"):
+            if name in values:
+                decoded = [float(item) for item in values[name]]
+                assert len(decoded) == len(set(decoded)), values[name]
+
+
+@pytest.mark.parametrize(
+    "kwargs, pinned",
+    [
+        ({"path_params": {"documentId": 5, "version": "7"}}, {"documentId": "5", "version": "7"}),
+        ({"path_params": {"documentId": "05"}}, {"documentId": "05"}),
+    ],
+)
+def test_mock_pins_path_params_as_matcher_strings(
+    generated: Any, kwargs: dict[str, Any], pinned: dict[str, str]
+) -> None:
+    _, operations = generated
+    mock = operations.main.get_version.mock(response=None, **kwargs)
+    assert mock._path_params == pinned
+
+
+@pytest.mark.parametrize(
+    "path_params, error, message",
+    [
+        ({"version": 0}, RequestContractError, "path_params['version']"),
+        ({"version": True}, RequestContractError, "не приводится к типу 'integer'"),
+        ({"documentId": None}, ContractMockError, "null в запросе записывается пустой строкой"),
+    ],
+)
+def test_mock_rejects_path_params_no_request_could_match(
+    generated: Any, path_params: dict[str, Any], error: type[Exception], message: str
+) -> None:
+    _, operations = generated
+    with pytest.raises(error, match=re.escape(message)):
+        operations.main.get_version.mock(response=None, path_params=path_params)
+
+
+def test_pinned_path_param_is_compared_by_its_wire_text(generated: Any) -> None:
+    """``True`` и ``7`` сравниваются с запросом так, как их отправил бы клиент."""
+    _, operations = generated
+    handle = operations.main.get_version
+    request = {
+        "method": "GET",
+        "path": "/documents/5/versions/7",
+        "segments": {},
+        "params": [],
+        "headers": [],
+        "body": None,
+    }
+    handle.validate_recorded_request(**request, index=0, pinned_path_params={"version": 7})
+    with pytest.raises(RequestContractError, match="отличается от закреплённого"):
+        handle.validate_recorded_request(**request, index=0, pinned_path_params={"version": 8})
+
+
+@pytest.mark.parametrize(
+    "headers, pinned",
+    [
+        ({"X-Page-Size": 10}, {"X-Page-Size": "10"}),
+        ({"x-page-size": "5"}, {"x-page-size": "5"}),
+        ({"Authorization": "Bearer token"}, {"Authorization": "Bearer token"}),
+    ],
+)
+def test_mock_pins_declared_headers_by_contract_and_others_as_is(
+    generated: Any, headers: dict[str, Any], pinned: dict[str, str]
+) -> None:
+    _, operations = generated
+    mock = operations.main.list_items.mock(
+        response=None, path_params={"workspaceId": "w"}, headers=headers
+    )
+    assert mock._headers == pinned
+
+
+def test_mock_rejects_declared_header_outside_the_contract(generated: Any) -> None:
+    _, operations = generated
+    with pytest.raises(RequestContractError, match=re.escape("headers['X-Page-Size']")):
+        operations.main.list_items.mock(
+            response=None, path_params={"workspaceId": "w"}, headers={"X-Page-Size": 0}
+        )
+
+
+@pytest.mark.parametrize(
+    "query_params, outcome",
+    [
+        ({"q": None}, {"q": ""}),
+        ({"archived": None}, "null в запросе записывается пустой строкой"),
+        ({"limit": None}, "null в запросе записывается пустой строкой"),
+    ],
+)
+def test_mock_writes_null_as_empty_string_only_where_it_decodes_to_null(
+    generated: Any, query_params: dict[str, Any], outcome: Any
+) -> None:
+    _, operations = generated
+    create = lambda: operations.main.list_items.mock(  # noqa: E731
+        response=None, path_params={"workspaceId": "w"}, query_params=query_params
+    )
+    if isinstance(outcome, dict):
+        assert create()._query_params == outcome
+        return
+    with pytest.raises(ContractMockError, match=outcome):
+        create()
+
+
+def test_request_d42_schema_of_a_bodiless_operation_points_to_parts(generated: Any) -> None:
+    _, operations = generated
+    with pytest.raises(OperationLookupError) as info:
+        operations.main.get_role_link.d42_schema(Direction.REQUEST)
+    message = str(info.value)
+    assert "нет тела запроса" in message
+    assert "part=" in message
+    assert "d42: false" not in message
+    with pytest.raises(OperationLookupError, match="нет ответа с телом"):
+        operations.main.get_version.d42_schema(Direction.RESPONSE)
 
 
 @pytest.mark.parametrize(
@@ -738,7 +904,9 @@ def _recorded(handle: Any, values: dict[ParameterLocation, dict[str, Any]]) -> d
     """
     path = handle.path
     for name, value in values.get(ParameterLocation.PATH, {}).items():
-        path = path.replace(f"{{{name}}}", quote(value, safe=""))
+        # aiohttp отдаёт путь уже раскодированным, а runtime раскодирует сегмент ещё
+        # раз: «/» внутри значения разбил бы маршрут, поэтому его не экранируем.
+        path = path.replace(f"{{{name}}}", quote(value, safe="/"))
     params = [
         (name, item)
         for name, value in values.get(ParameterLocation.QUERY, {}).items()

@@ -28,7 +28,7 @@ from ..errors import (
 )
 from ..models import Direction, ParameterLocation
 from .description import DEFAULT_MAX_DEPTH, describe_contract, describe_parameters
-from .validation import decode_parameter, validate_instance
+from .validation import decode_parameter, validate_instance, wire_text
 
 __all__ = [
     "OperationHandle",
@@ -242,19 +242,35 @@ class RequestView:
     parameter_sets: tuple[ParameterSetView, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.parameter_sets or not self.parameters():
-            return
-        derived = tuple(
-            ParameterSetView(location=location, parameters=items)
-            for location, items in (
-                (ParameterLocation.PATH, self.path),
-                (ParameterLocation.QUERY, self.query),
-                (ParameterLocation.HEADER, self.header),
-                (ParameterLocation.COOKIE, self.cookie),
+        by_location = {
+            ParameterLocation.PATH: self.path,
+            ParameterLocation.QUERY: self.query,
+            ParameterLocation.HEADER: self.header,
+            ParameterLocation.COOKIE: self.cookie,
+        }
+        for location, items in by_location.items():
+            misplaced = sorted(item.name for item in items if item.location is not location)
+            if misplaced:
+                raise ValueError(f"в {location.value} лежат параметры другого места: {misplaced}")
+        expected = {location: items for location, items in by_location.items() if items}
+        if not self.parameter_sets:
+            derived = tuple(
+                ParameterSetView(location=location, parameters=items)
+                for location, items in expected.items()
             )
-            if items
-        )
-        object.__setattr__(self, "parameter_sets", derived)
+            object.__setattr__(self, "parameter_sets", derived)
+            return
+        actual: dict[ParameterLocation, tuple[ParameterView, ...]] = {}
+        for item in self.parameter_sets:
+            if item.location in actual:
+                raise ValueError(f"место {item.location.value} в parameter_sets встречается дважды")
+            actual[item.location] = item.parameters
+        if actual != expected:
+            raise ValueError(
+                "parameter_sets расходятся с path/query/header/cookie: места "
+                f"{sorted(location.value for location in actual)} против "
+                f"{sorted(location.value for location in expected)} либо другой состав параметров"
+            )
 
     def parameters(self) -> tuple[ParameterView, ...]:
         """Все параметры в стабильном порядке."""
@@ -566,13 +582,13 @@ class OperationHandle:
                     expected=self._path,
                     actual=path,
                 )
-            if view.name in pinned and str(pinned[view.name]) != raw:
+            if view.name in pinned and wire_text(pinned[view.name]) != raw:
                 raise RequestContractError(
                     f"path-параметр {view.name!r} отличается от закреплённого в моке",
                     request_index=index,
                     operation_key=self._key,
                     json_pointer=f"/path/{view.name}",
-                    expected=str(pinned[view.name]),
+                    expected=wire_text(pinned[view.name]),
                     actual=raw,
                 )
             value = decode_parameter(
@@ -851,6 +867,9 @@ class OperationHandle:
             export = self._only_d42_export(direction)
         module_name = self._d42_module_name(direction)
         if module_name is None or export is None:
+            missing_body = self._missing_body(direction)
+            if missing_body is not None:
+                raise OperationLookupError(missing_body, operation_key=self._key)
             reason = (
                 self._d42_reasons.get(direction.value)
                 or self._d42_reason
@@ -870,6 +889,22 @@ class OperationHandle:
                 f"командой 'geas update'",
                 operation_key=self._key,
             ) from exc
+
+    def _missing_body(self, direction: Direction) -> str | None:
+        """Сообщение, если d42-схемы тела нет потому, что тела нет в контракте."""
+        if direction is Direction.RESPONSE:
+            if any(item.json_schema is not None for item in self._responses):
+                return None
+            return f"у операции {self._key!r} нет ответа с телом, поэтому нет и его d42-схемы"
+        if self._request.bodies:
+            return None
+        message = f"у операции {self._key!r} нет тела запроса, поэтому нет и его d42-схемы"
+        places = [item.location.value for item in self._request.parameter_sets]
+        if places:
+            message += (
+                f". d42-схемы параметров: d42_schema(Direction.REQUEST, part=...), места {places}"
+            )
+        return message
 
     def _parameters_d42_schema(self, view: ParameterSetView) -> Any:
         """d42-схема параметров места либо ошибка с причиной, почему её нет."""
