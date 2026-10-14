@@ -22,6 +22,7 @@ from ..models import ParameterLocation
 from .description import join_pointer
 from .operation import (
     OperationHandle,
+    ParameterSetView,
     ParameterView,
     RequestBodyView,
     RequestView,
@@ -67,25 +68,52 @@ def handle_from_document(
     d42_reasons = {
         direction: d42_section.get(f"{direction}_reason") for direction in ("request", "response")
     }
-    modules: dict[str, str | None] = {"request": None, "response": None}
-    sources: dict[str, Path | None] = {"request": None, "response": None}
+    modules: dict[str, str | None] = {"request": None, "response": None, "parameters": None}
+    sources: dict[str, Path | None] = {"request": None, "response": None, "parameters": None}
     if d42_section.get("enabled"):
         directory = _d42_directory(d42_dir, contract)
-        for direction in ("request", "response"):
-            module = d42_section.get(f"{direction}_module")
+        for part in ("request", "response", "parameters"):
+            module = d42_section.get(f"{part}_module")
             if not module:
                 continue
             if d42_package:
-                modules[direction] = f"{d42_package}.{module}"
-            sources[direction] = _d42_source(directory, module)
+                modules[part] = f"{d42_package}.{module}"
+            sources[part] = _d42_source(directory, module)
 
     request_raw = document["request"]
     parameters = [_parameter(item) for item in request_raw["parameters"]]
+    parameter_exports = d42_section.get("parameters")
+    parameter_reasons = d42_section.get("parameters_reasons") or {}
+    parameter_sets: list[ParameterSetView] = []
+    for location in ParameterLocation:
+        items = tuple(p for p in parameters if p.location is location)
+        if not items:
+            continue
+        export = (parameter_exports or {}).get(location.value)
+        reason = parameter_reasons.get(location.value)
+        if parameter_exports is None and d42_section.get("enabled"):
+            reason = (
+                "артефакты собраны версией Geas без d42-схем параметров; перегенерируйте "
+                "их командой 'geas update'"
+            )
+        parameter_sets.append(
+            ParameterSetView(
+                location=location,
+                parameters=items,
+                d42_export=export,
+                d42_reason=None if export else reason,
+                operation_key=key,
+                contract_file=contract,
+                d42_module=modules["parameters"] if export else None,
+                d42_source_path=sources["parameters"] if export else None,
+            )
+        )
     request = RequestView(
         path=tuple(p for p in parameters if p.location is ParameterLocation.PATH),
         query=tuple(p for p in parameters if p.location is ParameterLocation.QUERY),
         header=tuple(p for p in parameters if p.location is ParameterLocation.HEADER),
         cookie=tuple(p for p in parameters if p.location is ParameterLocation.COOKIE),
+        parameter_sets=tuple(parameter_sets),
         bodies=tuple(
             RequestBodyView(
                 content_type=item["content_type"],

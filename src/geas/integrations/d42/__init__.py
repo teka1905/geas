@@ -17,6 +17,9 @@
   рекурсивных контрактах (см. :mod:`geas.integrations.d42.recursion`);
 * :data:`json_int` / :class:`JsonIntSchema` — целочисленная ветка ``number``:
   ``schema.int`` без ``bool``.
+* :func:`serialized` и :class:`SerializedSchema` — значение параметра запроса в
+  строковом виде поверх типизированной схемы (см.
+  :mod:`geas.integrations.d42.serialized`).
 
 Нужна d42 не ниже 2.3.0: интеграция опирается на ``optional.absent``
 (``d42.declaration.types.is_absent``). На более старой d42 импорт падает
@@ -52,6 +55,7 @@ from geas.integrations.d42.json_int import JsonIntSchema, json_int
 from geas.integrations.d42.overlays import EACH, overlay_generators
 from geas.integrations.d42.recursion import RecursionContract, RecursiveRefSchema
 from geas.integrations.d42.renderer import render_expression, render_module
+from geas.integrations.d42.serialized import SerializedSchema, serialized
 from geas.integrations.d42.typed_dict import TypedDictSchema, typed_dict
 
 __all__ = [
@@ -59,12 +63,14 @@ __all__ = [
     "JsonIntSchema",
     "RecursionContract",
     "RecursiveRefSchema",
+    "SerializedSchema",
     "TypedDictSchema",
     "build_fixture",
     "json_int",
     "overlay_generators",
     "render_expression",
     "render_module",
+    "serialized",
     "to_d42",
     "typed_dict",
 ]

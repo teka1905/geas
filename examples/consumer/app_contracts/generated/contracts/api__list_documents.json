@@ -5,6 +5,11 @@
   },
   "d42": {
     "enabled": true,
+    "parameters": {
+      "path": "GeneratedApiListDocumentsPathParamsSchema",
+      "query": "GeneratedApiListDocumentsQueryParamsSchema"
+    },
+    "parameters_module": "api__list_documents_request_parameters",
     "recursive": false,
     "request_module": null,
     "response_module": "api__list_documents_response"

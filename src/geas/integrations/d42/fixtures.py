@@ -100,6 +100,7 @@ from geas.errors import (
 )
 from geas.integrations.d42.json_int import JsonIntSchema
 from geas.integrations.d42.overlays import original_contract
+from geas.integrations.d42.serialized import SerializedSchema, serialized
 
 __all__ = ["DEFAULT_SEED", "build_fixture", "project_first_variant", "validate_overlay_fixture"]
 
@@ -243,6 +244,11 @@ def _project(schema: GenericSchema, *, keep: int) -> GenericSchema:
 
     if isinstance(schema, ListSchema):
         return _project_list(schema)
+
+    if isinstance(schema, SerializedSchema):
+        return serialized(
+            _project(schema.inner, keep=keep), delimiter=schema.delimiter, location=schema.location
+        )
 
     return schema
 

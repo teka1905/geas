@@ -763,6 +763,7 @@ def _render_document(
             item["d42"] = _root_export(response.body, f"{pascal}Response{response.status}")
         responses.append(item)
 
+    parameter_exports = _parameter_exports(contract, pascal) if d42_enabled else {}
     return {
         "artifact": {"kind": "operation-contract", "version": 1},
         "key": contract.key,
@@ -783,7 +784,27 @@ def _render_document(
             "response_module": f"{slug}_response"
             if d42_enabled and any(item["schema"] for item in responses)
             else None,
+            "parameters_module": f"{slug}_request_parameters" if parameter_exports else None,
+            "parameters": parameter_exports,
         },
+    }
+
+
+#: Суффикс имени d42-схемы параметров для каждого места запроса.
+_PARAMETER_EXPORT_SUFFIXES = {
+    ParameterLocation.PATH: "PathParams",
+    ParameterLocation.QUERY: "QueryParams",
+    ParameterLocation.HEADER: "Headers",
+    ParameterLocation.COOKIE: "Cookies",
+}
+
+
+def _parameter_exports(contract: OperationContract, pascal: str) -> dict[str, str]:
+    """Место запроса → имя переменной его d42-схемы; места без параметров пропускаются."""
+    return {
+        location.value: d42_schema_name(f"{pascal}{suffix}")
+        for location, suffix in _PARAMETER_EXPORT_SUFFIXES.items()
+        if any(parameter.location is location for parameter in contract.request.parameters())
     }
 
 

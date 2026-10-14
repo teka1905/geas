@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
 
@@ -26,6 +27,8 @@ __all__ = [
     "ARRAY_DELIMITERS",
     "MAX_VALUE_REPR",
     "decode_parameter",
+    "decode_scalar",
+    "encode_scalar",
     "json_schema_validator",
     "validate_instance",
 ]
@@ -267,24 +270,65 @@ def _coerce(
             actual=_safe_repr(text),
         )
 
+    if (kind == "string" or kind is None) and nullable and text == "":
+        return None
+    try:
+        return decode_scalar(text, kind)
+    except ValueError as error:
+        expected = str(error)
+    fail(expected)
+    raise AssertionError("unreachable")
+
+
+def decode_scalar(text: str, kind: str | None) -> Any:
+    """Разобрать строковый вид скаляра по типу JSON Schema.
+
+    Правило одно на всю библиотеку: по нему проверяется перехваченный запрос,
+    разбирают значение d42-схемы параметров и закреплённые ``query_params`` мока.
+    Поэтому значение, которое прошло одну из этих проверок, пройдёт и остальные.
+
+    ``kind=None`` — тип не задан: строка остаётся строкой.
+
+    :raises ValueError: строка не приводится к типу; текст — ожидаемая форма значения.
+    """
     if kind == "integer":
         if not _INTEGER.match(text):
-            fail("целое число в десятичной записи")
+            raise ValueError("целое число в десятичной записи")
         return int(text)
     if kind == "number":
         if not _NUMBER.match(text):
-            fail("число")
+            raise ValueError("число")
         return float(text)
     if kind == "boolean":
         if text not in ("true", "false"):
-            fail("'true' или 'false'")
+            raise ValueError("'true' или 'false'")
         return text == "true"
     if kind == "string" or kind is None:
-        if nullable and text == "":
-            return None
         return text
-    fail(f"скалярный тип, а не {kind!r}")
-    raise AssertionError("unreachable")
+    raise ValueError(f"скалярный тип, а не {kind!r}")
+
+
+def encode_scalar(value: Any) -> str:
+    """Строковый вид скаляра в запросе — обратное к :func:`decode_scalar`.
+
+    ``True`` уходит как ``"true"``, а не как ``str(True) == "True"``. Наследники
+    ``str`` и ``int`` (в том числе ``Enum`` поверх них) отдают своё значение, а не
+    имя члена перечисления.
+
+    :raises ValueError: у значения нет строкового вида параметра (контейнер,
+        ``None``, бесконечность или NaN).
+    """
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, str):
+        return str.__str__(value)
+    if isinstance(value, int):
+        return int.__repr__(value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"у {value!r} нет записи числом в запросе")
+        return float.__repr__(value)
+    raise ValueError(f"у значения {type(value).__name__} нет строкового вида параметра")
 
 
 def wrap_validation_error(

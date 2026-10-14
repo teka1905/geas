@@ -1,0 +1,284 @@
+# d42-схемы параметров запроса: все поддержанные места, типы и формы сериализации.
+#
+# getRoleLink        — форма из Tandava: int64 и строковый enum в query.
+# listItems          — каждое место (path, query, header, cookie), каждый скалярный
+#                      тип, массив повторами ключа и массивы одной строкой через
+#                      запятую, пробел и «|», nullable-строка.
+# getVersion         — только path-параметры: integer с границами.
+# createNote         — тело запроса и query-параметр рядом: модули независимы.
+# searchDeep         — deepObject над скаляром, разрешённый waiver'ом: query-схема
+#                      не строится, path-схема той же операции — строится.
+# mixedCaseHeaders   — два заголовка, различающиеся только регистром.
+# transportEdges     — строки, которые транспорт мог бы изменить: пустой сегмент
+#                      path, пробел по краю заголовка и cookie, «;» в cookie.
+openapi: "3.0.3"
+
+info:
+  title: Parameters d42 fixture
+  version: "1.0.0"
+
+paths:
+  /roles/idm-link:
+    get:
+      operationId: getRoleLink
+      parameters:
+        - name: folderId
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [ADMIN, READ, MANAGE_INTEGRATIONS]
+      responses:
+        "200":
+          description: Ссылка
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [url]
+                properties:
+                  url:
+                    type: string
+
+  /workspaces/{workspaceId}/items:
+    get:
+      operationId: listItems
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+        - name: ratio
+          in: query
+          schema:
+            type: number
+            minimum: 0
+            maximum: 1
+        - name: archived
+          in: query
+          schema:
+            type: boolean
+        - name: status
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [draft, published]
+        - name: ids
+          in: query
+          style: form
+          explode: false
+          schema:
+            type: array
+            minItems: 2
+            maxItems: 5
+            items:
+              type: integer
+              format: int64
+              minimum: 1
+        - name: tags
+          in: query
+          style: spaceDelimited
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+              minLength: 1
+        - name: codes
+          in: query
+          style: pipeDelimited
+          explode: false
+          schema:
+            type: array
+            uniqueItems: true
+            items:
+              type: integer
+              format: int32
+        - name: q
+          in: query
+          schema:
+            type: string
+            nullable: true
+            minLength: 3
+        - name: pairs
+          in: query
+          schema:
+            type: array
+            minItems: 2
+            items:
+              type: string
+        - name: owner
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: kinds
+          in: query
+          schema:
+            type: array
+            uniqueItems: true
+            items:
+              type: string
+              enum: [a, b]
+        - name: X-Trace-Id
+          in: header
+          schema:
+            type: string
+            pattern: "^[0-9a-f]{8}$"
+        - name: X-Page-Size
+          in: header
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+        - name: session
+          in: cookie
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Пусто
+
+  /documents/{documentId}/versions/{version}:
+    get:
+      operationId: getVersion
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 999
+      responses:
+        "204":
+          description: Пусто
+
+  /notes:
+    post:
+      operationId: createNote
+      parameters:
+        - name: notify
+          in: query
+          schema:
+            type: boolean
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+      responses:
+        "204":
+          description: Создано
+
+  /spaces/{spaceId}/search:
+    get:
+      operationId: searchDeep
+      parameters:
+        - name: spaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: filter
+          in: query
+          style: deepObject
+          explode: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Пусто
+
+  /modes:
+    get:
+      operationId: mixedCaseHeaders
+      parameters:
+        - name: X-Mode
+          in: header
+          schema:
+            type: string
+        - name: x-mode
+          in: header
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Пусто
+
+  /files/{names}/{code}:
+    get:
+      operationId: transportEdges
+      parameters:
+        - name: names
+          in: path
+          required: true
+          schema:
+            type: array
+            items:
+              type: string
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[a-z]*$"
+        - name: X-Label
+          in: header
+          required: true
+          schema:
+            type: string
+            minLength: 2
+        - name: sid
+          in: cookie
+          required: true
+          schema:
+            type: string
+            minLength: 3
+        - name: tok
+          in: cookie
+          required: true
+          schema:
+            type: string
+            pattern: "^.{4}$"
+      responses:
+        "204":
+          description: Пусто

@@ -310,10 +310,17 @@ def test_d42_is_disabled_with_a_reason_when_it_cannot_express_the_contract(
 
     assert dict(artifacts.d42_disabled).get("api.createDocument")
     document = project.contract_document("api__create_document")
-    assert document["d42"]["enabled"] is False
+    assert document["d42"]["request_module"] is None
+    assert document["d42"]["response_module"] is None
     assert "pattern" in document["d42"]["reason"]
     assert any("d42:" in item for item in document["unsupported"])
-    assert not (project.output_dir / "_d42").exists()
+    # Отказ d42 в телах не отнимает d42 у параметров: path-параметр выражается.
+    assert document["d42"]["enabled"] is True
+    assert document["d42"]["parameters_module"] == "api__create_document_request_parameters"
+    assert sorted(path.name for path in (project.output_dir / "_d42").iterdir()) == [
+        "__init__.py",
+        "api__create_document_request_parameters.py",
+    ]
 
     with project.importable() as generated_package:
         handle = generated_package.operations.api.create_document

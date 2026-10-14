@@ -147,11 +147,14 @@ from geas.models import (
     NullNode,
     NumberNode,
     ObjectNode,
+    ParameterContract,
+    ParameterLocation,
     RefNode,
     SchemaNode,
     StringNode,
     UnionNode,
 )
+from geas.normalization.parameters import ARRAY_DELIMITERS, SUPPORTED_SERIALIZATION
 from geas.paths import (
     ADDITIONAL_PROPERTIES,
     ARRAY_ITEMS,
@@ -168,9 +171,10 @@ from .intersection import (
 )
 from .json_int import json_int
 from .recursion import RecursionContract
+from .serialized import serialized
 from .typed_dict import typed_dict
 
-__all__ = ["DroppedBranchNote", "cut_cycles", "to_d42"]
+__all__ = ["DroppedBranchNote", "cut_cycles", "parameters_to_d42", "plan_parameters", "to_d42"]
 
 
 class _NoLiteral:
@@ -236,8 +240,17 @@ class _UnionPlan:
     variants: tuple[_Plan, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _SerializedPlan:
+    """``serialized(inner[, delimiter=...][, location=...])`` — строковый вид значения параметра."""
+
+    inner: _Plan
+    delimiter: str | None = None
+    location: str | None = None
+
+
 #: План — дерево вызовов d42, из которого собирается и объект, и исходный текст.
-_Plan = _Ref | _Cut | _Leaf | _DictPlan | _ListPlan | _UnionPlan
+_Plan = _Ref | _Cut | _Leaf | _DictPlan | _ListPlan | _UnionPlan | _SerializedPlan
 
 #: План значения ``null``: выносится в константу, чтобы не плодить объекты.
 _NONE_PLAN = _Leaf(base="none")
@@ -397,6 +410,8 @@ def ordered_references(plan: _Plan) -> tuple[str, ...]:
         elif isinstance(item, _UnionPlan):
             for variant in item.variants:
                 walk(variant)
+        elif isinstance(item, _SerializedPlan):
+            walk(item.inner)
 
     walk(plan)
     return tuple(found)
@@ -419,6 +434,8 @@ def cut_targets(plans: Iterable[_Plan]) -> set[str]:
         elif isinstance(item, _UnionPlan):
             for variant in item.variants:
                 walk(variant)
+        elif isinstance(item, _SerializedPlan):
+            walk(item.inner)
 
     for plan in plans:
         walk(plan)
@@ -454,6 +471,12 @@ def _replace_refs(plan: _Plan, targets: set[str]) -> _Plan:
         return _ListPlan(items=_replace_refs(plan.items, targets), calls=plan.calls)
     if isinstance(plan, _UnionPlan):
         return _UnionPlan(variants=tuple(_replace_refs(item, targets) for item in plan.variants))
+    if isinstance(plan, _SerializedPlan):
+        return _SerializedPlan(
+            inner=_replace_refs(plan.inner, targets),
+            delimiter=plan.delimiter,
+            location=plan.location,
+        )
     return plan
 
 
@@ -479,6 +502,8 @@ def referenced_names(plan: _Plan) -> set[str]:
         for variant in plan.variants:
             names |= referenced_names(variant)
         return names
+    if isinstance(plan, _SerializedPlan):
+        return referenced_names(plan.inner)
     return set()
 
 
@@ -1052,6 +1077,194 @@ def _error(
 
 
 # --------------------------------------------------------------------------------------
+# Параметры запроса
+# --------------------------------------------------------------------------------------
+
+
+def parameters_to_d42(
+    location: ParameterLocation, parameters: Sequence[ParameterContract]
+) -> GenericSchema:
+    """Собрать живую d42-схему параметров одного места запроса (см. :func:`plan_parameters`)."""
+    return build(plan_parameters(location, parameters), {})
+
+
+def plan_parameters(
+    location: ParameterLocation, parameters: Sequence[ParameterContract]
+) -> _DictPlan:
+    """План d42-схемы параметров одного места запроса: имя → значение в виде «на проводе».
+
+    Строковый параметр в query остаётся ``schema.str``: его значение и есть строка
+    запроса. ``integer``, ``number`` и ``boolean`` оборачиваются в
+    :func:`~geas.integrations.d42.serialized.serialized` поверх типизированной схемы —
+    границы и ``enum`` сохраняются точно. Строку в path, header и cookie транспорт
+    ограничивает сам (непустой сегмент, нет пробелов по краям, нет ``;`` в cookie),
+    поэтому она тоже оборачивается — с ``location``. Массив, который уходит повторами
+    ключа (``form``, ``explode: true`` в query), — список строковых видов элементов;
+    массив одной строкой — ``serialized(schema.list(...), delimiter=...)``.
+
+    Необязательный параметр — ``optional(...)``. Словарь query, header и cookie
+    открыт (``...: ...``): контракт не запрещает необъявленные параметры, и запрос
+    их несёт всегда (заголовки ``Host``, ``User-Agent``). Словарь path закрыт: набор
+    его ключей задаёт шаблон маршрута.
+
+    :raises UnsupportedConstructError: у параметра нет однозначного строкового вида —
+        например, сериализацию разрешил waiver ``allow_unsupported_serialization``.
+    """
+    if location is ParameterLocation.HEADER:
+        seen: dict[str, str] = {}
+        for parameter in parameters:
+            other = seen.setdefault(parameter.name.lower(), parameter.name)
+            if other != parameter.name:
+                raise _error(
+                    UnsupportedConstructError,
+                    f"заголовки {other!r} и {parameter.name!r} различаются только регистром, "
+                    f"а имена заголовков регистронезависимы",
+                    parameter.schema,
+                    ("param", location.value, parameter.name),
+                    None,
+                )
+    entries = tuple(
+        (parameter.name, _plan_parameter(parameter), not parameter.required)
+        for parameter in sorted(parameters, key=lambda item: item.name)
+    )
+    return _DictPlan(entries=entries, open=location is not ParameterLocation.PATH)
+
+
+def _plan_parameter(parameter: ParameterContract) -> _Plan:
+    """План одного параметра по его месту, стилю и типу."""
+    location = parameter.location
+    path: ContractPath = ("param", location.value, parameter.name)
+    node = parameter.schema
+    kind = "array" if isinstance(node, ArrayNode) else "scalar"
+    if (location.value, parameter.style, parameter.explode, kind) not in SUPPORTED_SERIALIZATION:
+        raise _error(
+            UnsupportedConstructError,
+            f"параметр {parameter.name!r}: сериализацию style={parameter.style}, "
+            f"explode={str(parameter.explode).lower()} для {kind} разрешил waiver, но "
+            f"строкового вида значения у неё нет — библиотека такие значения не разбирает",
+            node,
+            path,
+            None,
+        )
+    if not isinstance(node, ArrayNode):
+        return _plan_wire_scalar(node, location, path)
+
+    item_path: ContractPath = (*path, ARRAY_ITEMS)
+    if node.min_items is not None and node.max_items is not None:
+        _require_range(node, node.min_items, node.max_items, "minItems", path, None)
+    if node.max_items is not None and node.max_items < 1:
+        raise _error(
+            UnsupportedConstructError,
+            f"параметр {parameter.name!r}: maxItems={node.max_items} — в запросе такой "
+            f"массив выражается только отсутствием параметра",
+            node,
+            path,
+            None,
+        )
+    # Пустого массива в запросе нет: повторов ключа ноль — это отсутствие параметра, а
+    # пустая строка разбирается в один пустой элемент. Поэтому элементов минимум один.
+    minimum = max(node.min_items or 0, 1)
+    maximum = node.max_items
+    domain = _finite_domain(node.items)
+    if node.unique_items and domain is not None:
+        # Различных элементов не больше, чем значений у типа: верхняя граница точна и
+        # не даёт генератору d42 упереться в нехватку уникальных значений.
+        maximum = domain if maximum is None else min(maximum, domain)
+        _require_range(node, minimum, maximum, "minItems", path, None)
+    calls = _length_calls(minimum, maximum)
+    if node.unique_items:
+        calls = (*calls, ("unique", ()))
+
+    if location is ParameterLocation.QUERY and parameter.style == "form" and parameter.explode:
+        items = _plan_wire_scalar(node.items, location, item_path)
+        return _ListPlan(items=items, calls=calls)
+
+    delimiter = ARRAY_DELIMITERS[parameter.style]
+    if isinstance(node.items, StringNode):
+        for value in node.items.enum or ():
+            if delimiter in value:
+                raise _error(
+                    UnsupportedConstructError,
+                    f"параметр {parameter.name!r}: значение enum {value!r} содержит "
+                    f"разделитель {delimiter!r}, и массив в одной строке разбирается "
+                    f"неоднозначно",
+                    node.items,
+                    item_path,
+                    None,
+                )
+    typed = _plan_typed_scalar(node.items, item_path)
+    if isinstance(node.items, StringNode) and node.items.nullable:
+        typed = _with_empty_string(typed)
+    return _SerializedPlan(
+        inner=_ListPlan(items=typed, calls=calls),
+        delimiter=delimiter,
+        location=_text_location(location) if isinstance(node.items, StringNode) else None,
+    )
+
+
+def _plan_wire_scalar(node: SchemaNode, location: ParameterLocation, path: ContractPath) -> _Plan:
+    """Скаляр в виде строки запроса."""
+    if not isinstance(node, StringNode):
+        # ``null`` у нестрокового параметра в запросе не записать: пустая строка не
+        # разбирается как число, поэтому nullable здесь ничего не добавляет. Ограничения
+        # транспорта число и флаг выполняют всегда: запись непустая и без пробелов.
+        return _SerializedPlan(inner=_plan_typed_scalar(node, path))
+    plan = _plan_string(node, path, None)
+    if node.nullable and location is not ParameterLocation.PATH:
+        # Пустая строка nullable-параметра разбирается в null — контракт её допускает.
+        plan = _with_empty_string(plan)
+    text_location = _text_location(location)
+    return plan if text_location is None else _SerializedPlan(inner=plan, location=text_location)
+
+
+def _text_location(location: ParameterLocation) -> str | None:
+    """Место, транспорт которого ограничивает сам текст строкового значения."""
+    return None if location is ParameterLocation.QUERY else location.value
+
+
+def _finite_domain(node: SchemaNode) -> int | None:
+    """Сколько различных значений допускает скаляр, если их конечное число."""
+    enum = getattr(node, "enum", None)
+    if enum is not None:
+        # У nullable-строки есть ещё пустая строка: она разбирается в null.
+        empty = isinstance(node, StringNode) and node.nullable and "" not in enum
+        return len(set(enum)) + int(empty)
+    if isinstance(node, BooleanNode):
+        return 2
+    return None
+
+
+def _plan_typed_scalar(node: SchemaNode, path: ContractPath) -> _Plan:
+    """Типизированная схема скалярного значения параметра (без учёта ``nullable``)."""
+    if isinstance(node, StringNode):
+        return _plan_string(node, path, None)
+    if isinstance(node, IntegerNode):
+        return _plan_integer(node, path, None)
+    if isinstance(node, NumberNode):
+        return _plan_number(node, path, None)
+    if isinstance(node, BooleanNode):
+        return _plan_boolean(node, path, None)
+    raise _error(
+        UnsupportedConstructError,
+        f"значение параметра описано как {type(node).__name__}; поддержаны только "
+        f"скаляры и массивы скаляров",
+        node,
+        path,
+        None,
+    )
+
+
+def _with_empty_string(plan: _Plan) -> _Plan:
+    """Добавить к строковому плану вариант ``""``, если его там ещё нет."""
+    empty = _Leaf(base="str", literal="")
+    if plan == empty:
+        return plan
+    if isinstance(plan, _UnionPlan):
+        return plan if empty in plan.variants else _UnionPlan(variants=(*plan.variants, empty))
+    return _UnionPlan(variants=(plan, empty))
+
+
+# --------------------------------------------------------------------------------------
 # Сборка объектов d42
 # --------------------------------------------------------------------------------------
 
@@ -1095,6 +1308,10 @@ def build(
         for name, args in plan.calls:
             listed = getattr(listed, name)(*args)
         return listed  # type: ignore[no-any-return]
+    if isinstance(plan, _SerializedPlan):
+        return serialized(
+            build(plan.inner, built, contract), delimiter=plan.delimiter, location=plan.location
+        )
     return schema.any(*(build(variant, built, contract) for variant in plan.variants))
 
 

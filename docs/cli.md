@@ -169,7 +169,8 @@ geas [-m MANIFEST] update
 - Повторный запуск без изменений на входе даёт те же байты.
 
 Команда печатает число записанных файлов, удалённые устаревшие артефакты,
-операции без d42-схем с причиной по направлениям, места отсечки циклов в
+операции без d42-схем с причиной по направлениям, места запроса без d42-схемы
+параметров с причиной, места отсечки циклов в
 рекурсивных контрактах, ветки `allOf`, выброшенные из d42 как пустые, варианты,
 не представимые контрактом, покрытие waiver'ов со `scope: subtree` и
 предупреждения о waiver'ах с истекающим сроком:
@@ -179,7 +180,12 @@ geas [-m MANIFEST] update
   main.createReport: d42-схемы не сгенерированы — response: pattern вместе с minLength/maxLength не выражается в d42: …
   main.createFolderTree (response): цикл отсечён на ссылке FolderTree -> FolderTree; этот узел d42 проверяет по JSON Schema
   main.addReaction (request): ветка Heart в allOf Reaction:/ выброшена из d42 — обязательное свойство 'kind': enum ['LIKE', 'DISLIKE'] и ['HEART'] не пересекаются; по контракту она не допускает ни одного значения, проверьте спецификацию
+  main.searchDocuments (параметры query): d42-схема не сгенерирована — параметр 'filter': сериализацию style=deepObject, explode=true для scalar разрешил waiver, но строкового вида значения у неё нет — библиотека такие значения не разбирает [contract path /param/query/filter]
 ```
+
+Строка «параметры <место>» означает, что d42-схему не получило одно место
+запроса: схемы остальных мест и тела у операции есть — см.
+[support-matrix](support-matrix.md#параметры-в-d42).
 
 Выброшенная ветка не меняет смысла d42-схемы (она не допускала ни одного
 значения), но почти наверняка означает ошибку в спецификации — см.
@@ -260,14 +266,15 @@ api.createDocument:
 
 ```
 geas [-m MANIFEST] show OPERATION
-    [--direction {request,response}]
+    [--direction {request,response}] [--part {path,query,header,cookie}]
     [--status STATUS] [--content-type CONTENT_TYPE]
     [--json] [--max-depth N]
 ```
 
 Показывает тело запроса или ответа уже сгенерированного контракта: какие поля
 разрешены и обязательны, их типы, `enum`, `pattern` и границы. В конце выводится
-путь к JSON Schema и имя d42-схемы. Параметры и заголовки команда не показывает.
+путь к JSON Schema и имя d42-схемы. С `--part` вместо тела показываются параметры
+одного места запроса и их d42-схема. Заголовки ответа команда не показывает.
 
 `show` читает только артефакты: ничего не перегенерирует, не открывает OpenAPI и
 не требует extra `[d42]`. Если артефактов нет, команда завершается с кодом `1` и
@@ -276,7 +283,8 @@ geas [-m MANIFEST] show OPERATION
 | Аргумент | Значение |
 | --- | --- |
 | `OPERATION` | ключ операции из manifest, например `ws2.addTicket` |
-| `--direction` | `response` (по умолчанию) или `request` |
+| `--direction` | `response` (по умолчанию) или `request`; с `--part` по умолчанию `request` |
+| `--part` | место параметров запроса: `path`, `query`, `header` или `cookie`; не сочетается с `--status` и `--content-type` |
 | `--status` | статус ответа: число или `default`; только для `--direction response` |
 | `--content-type` | нужен, если у выбранного варианта несколько content type |
 | `--json` | машиночитаемый вывод |
@@ -323,6 +331,39 @@ d42 source:
 | `дополнительные свойства разрешены` | `additionalProperties` отсутствует или равен `true` |
 | `ещё: multipleOf, not` | ключевые слова, которые команда не расшифровывает; точная семантика — в JSON Schema по напечатанному пути |
 | `… (вложенность глубже N…)` | достигнут предел `--max-depth` |
+
+С `--part` вывод такой:
+
+```bash
+geas -m contracts/manifest.yaml show main.getFolderRoleIdmLink --part query
+```
+
+```
+main.getFolderRoleIdmLink
+Request query-параметры
+
+object; дополнительные свойства разрешены
+├── action — required; string; enum["ADMIN", "WRITE", "READ", "MANAGE_INTEGRATIONS", "MANAGE_BILIM_PATTERN", "ADVANCED_USER"]
+└── folderId — required; integer; format int64
+
+сериализация:
+  action: style=form, explode=true
+  folderId: style=form, explode=true
+
+JSON Schema:
+  /abs/path/schemas/generated/contracts/main__get_folder_role_idm_link.json#/request/parameters
+
+d42:
+  schemas.generated._d42.main__get_folder_role_idm_link_request_parameters:GeneratedMainGetFolderRoleIdmLinkQueryParamsSchema
+
+d42 source:
+  /abs/path/schemas/generated/_d42/main__get_folder_role_idm_link_request_parameters.py
+```
+
+Если у места нет d42-схемы, в блоке `d42:` печатается причина. `--json` с `--part`
+печатает `operation`, `direction`, `part`, `parameters` (имя, обязательность,
+`style`, `explode` и JSON Schema каждого), `contract_file`, `contract_path`,
+`d42_module`, `d42_export`, `d42_reference`, `d42_reason` и `d42_source_path`.
 
 `--json` печатает объект с полями `operation`, `direction`, `status`,
 `content_type`, `required` (для тела запроса), `contract_file`, `json_pointer`,

@@ -27,11 +27,12 @@ from ..errors import (
     ResponseVariantError,
 )
 from ..models import Direction, ParameterLocation
-from .description import DEFAULT_MAX_DEPTH, describe_contract
+from .description import DEFAULT_MAX_DEPTH, describe_contract, describe_parameters
 from .validation import decode_parameter, validate_instance
 
 __all__ = [
     "OperationHandle",
+    "ParameterSetView",
     "ParameterView",
     "RequestBodyView",
     "RequestView",
@@ -49,6 +50,57 @@ class ParameterView:
     style: str
     explode: bool
     json_schema: Mapping[str, Any]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ParameterSetView:
+    """Параметры одного места запроса (path, query, header, cookie) и их d42-схема.
+
+    d42-схема места — словарь «имя параметра → значение в том виде, в каком оно
+    уходит в запрос»: строки, числа и флаги строками, повторяющийся ключ — списком.
+    Про необязательные координаты артефактов — см. :class:`RequestBodyView`.
+    """
+
+    location: ParameterLocation
+    parameters: tuple[ParameterView, ...]
+    #: Имя переменной generated d42-схемы места (``None``, если схемы нет).
+    d42_export: str | None = None
+    #: Почему d42-схемы места нет; ``None``, если она есть.
+    d42_reason: str | None = None
+    #: Стабильный ключ операции — нужен описанию, чтобы назвать себя.
+    operation_key: str | None = None
+    #: Файл нормализованного контракта (``contracts/<slug>.json``).
+    contract_file: Path | None = None
+    #: Полное имя generated d42-модуля параметров запроса.
+    d42_module: str | None = None
+    #: Файл этого модуля — определяется без импорта d42.
+    d42_source_path: Path | None = None
+
+    @property
+    def contract_path(self) -> str | None:
+        """Файл контракта вместе с JSON Pointer списка параметров запроса."""
+        return _contract_path(self.contract_file, "/request/parameters")
+
+    @property
+    def d42_reference(self) -> str | None:
+        """Ссылка ``модуль:переменная`` на generated d42-схему места."""
+        return _d42_reference(self.d42_module, self.d42_export)
+
+    def describe(self, *, max_depth: int = DEFAULT_MAX_DEPTH) -> str:
+        """Человекочитаемое описание параметров места. Ничего не печатает — возвращает строку."""
+        return describe_parameters(
+            operation_key=self.operation_key,
+            location=self.location,
+            parameters=[
+                (item.name, item.required, item.style, item.explode, item.json_schema)
+                for item in self.parameters
+            ],
+            contract_path=self.contract_path,
+            d42_reference=self.d42_reference,
+            d42_reason=self.d42_reason,
+            d42_source_path=self.d42_source_path,
+            max_depth=max_depth,
+        )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -185,10 +237,39 @@ class RequestView:
     header: tuple[ParameterView, ...] = ()
     cookie: tuple[ParameterView, ...] = ()
     bodies: tuple[RequestBodyView, ...] = ()
+    #: Места, у которых есть параметры, в порядке path → query → header → cookie.
+    #: Если не переданы, собираются из параметров — без координат d42.
+    parameter_sets: tuple[ParameterSetView, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.parameter_sets or not self.parameters():
+            return
+        derived = tuple(
+            ParameterSetView(location=location, parameters=items)
+            for location, items in (
+                (ParameterLocation.PATH, self.path),
+                (ParameterLocation.QUERY, self.query),
+                (ParameterLocation.HEADER, self.header),
+                (ParameterLocation.COOKIE, self.cookie),
+            )
+            if items
+        )
+        object.__setattr__(self, "parameter_sets", derived)
 
     def parameters(self) -> tuple[ParameterView, ...]:
         """Все параметры в стабильном порядке."""
         return self.path + self.query + self.header + self.cookie
+
+    def parameter_set(self, location: ParameterLocation | str) -> ParameterSetView:
+        """Параметры одного места запроса вместе с координатами их d42-схемы."""
+        parsed = _parse_location(location)
+        for item in self.parameter_sets:
+            if item.location is parsed:
+                return item
+        declared = [item.location.value for item in self.parameter_sets]
+        raise OperationLookupError(
+            f"у операции нет {parsed.value}-параметров; параметры описаны в {declared or 'нигде'}"
+        )
 
     def body(self, content_type: str | None = None) -> RequestBodyView:
         """Контракт тела запроса.
@@ -728,17 +809,44 @@ class OperationHandle:
         direction: Direction,
         *,
         export: str | None = None,
+        part: ParameterLocation | str | None = None,
     ) -> Any:
-        """Вернуть generated d42-схему направления.
+        """Вернуть generated d42-схему направления или параметров одного места запроса.
 
         ``export`` — имя generated-переменной (``view.d42_export``). Если в
-        направлении ровно одна d42-схема, его можно не передавать; если их
+        направлении ровно одна d42-схема тела, его можно не передавать; если их
         несколько, выбор обязателен — молча брать первую нельзя.
 
-        Требует extra ``[d42]``. Если d42 для направления не генерировался
+        ``part`` — место запроса (``"path"``, ``"query"``, ``"header"``, ``"cookie"``):
+        вернуть схему его параметров в том виде, в каком значения уходят в запрос
+        (см. :class:`ParameterSetView`). Только для ``Direction.REQUEST`` и без
+        ``export``.
+
+        Требует extra ``[d42]``. Если d42 для направления или места не генерировался
         (``d42: false`` в manifest или конструкция, невыразимая в d42), поднимается
         понятная ошибка с причиной.
         """
+        if part is not None:
+            if export is not None:
+                raise OperationLookupError(
+                    "передайте либо export, либо part: part сам выбирает схему места",
+                    operation_key=self._key,
+                )
+            if direction is not Direction.REQUEST:
+                raise OperationLookupError(
+                    f"d42-схемы параметров генерируются только для запроса, а передано "
+                    f"направление {direction.value}",
+                    operation_key=self._key,
+                )
+            try:
+                view = self._request.parameter_set(part)
+            except OperationLookupError as error:
+                raise OperationLookupError(error.base_message, operation_key=self._key) from None
+            return self._parameters_d42_schema(view)
+        if direction is Direction.REQUEST and export is not None:
+            for item in self._request.parameter_sets:
+                if item.d42_export == export:
+                    return self._parameters_d42_schema(item)
         if export is None:
             export = self._only_d42_export(direction)
         module_name = self._d42_module_name(direction)
@@ -760,6 +868,25 @@ class OperationHandle:
             raise OperationLookupError(
                 f"в модуле {module_name} нет схемы {export!r}; перегенерируйте артефакты "
                 f"командой 'geas update'",
+                operation_key=self._key,
+            ) from exc
+
+    def _parameters_d42_schema(self, view: ParameterSetView) -> Any:
+        """d42-схема параметров места либо ошибка с причиной, почему её нет."""
+        if view.d42_module is None or view.d42_export is None:
+            reason = view.d42_reason or self._d42_reason or "в manifest у операции стоит d42: false"
+            raise OperationLookupError(
+                f"для операции {self._key!r} не сгенерирована d42-схема "
+                f"{view.location.value}-параметров: {reason}",
+                operation_key=self._key,
+            )
+        module = _import_d42_module(view.d42_module)
+        try:
+            return getattr(module, view.d42_export)
+        except AttributeError as exc:
+            raise OperationLookupError(
+                f"в модуле {view.d42_module} нет схемы {view.d42_export!r}; перегенерируйте "
+                f"артефакты командой 'geas update'",
                 operation_key=self._key,
             ) from exc
 
@@ -806,6 +933,19 @@ class OperationHandle:
         except ImportError as exc:  # pragma: no cover - зависит от окружения
             raise MissingExtraError("jj", "OperationHandle.mock()") from exc
         return ContractMock(operation=self, **kwargs)
+
+
+def _parse_location(location: ParameterLocation | str) -> ParameterLocation:
+    """Место запроса из enum или его строкового значения."""
+    if isinstance(location, ParameterLocation):
+        return location
+    try:
+        return ParameterLocation(location)
+    except ValueError:
+        allowed = [item.value for item in ParameterLocation]
+        raise OperationLookupError(
+            f"неизвестное место параметров {location!r}; допустимы {allowed}"
+        ) from None
 
 
 def _import_d42_module(module_name: str) -> Any:

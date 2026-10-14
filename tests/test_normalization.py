@@ -1250,6 +1250,8 @@ def test_recursive_schemas_build_with_d42_enabled(
         "recursive": True,
         "request_module": None,
         "response_module": f"{slug}_response",
+        "parameters_module": None,
+        "parameters": {},
     }
 
 

@@ -70,6 +70,7 @@
 | `ref_siblings.yaml` | соседи `$ref`: `readOnly` и `nullable` — законные, `minLength` — нет | `getLegalCard` разбирается, `getIllegalCard` отклоняется |
 | `cookie_params.yaml` | параметр в cookie | разбирается |
 | `deep_object.yaml` | `style: deepObject` в query | обе операции отклоняются |
+| `parameters_d42.yaml` | семь операций на d42-схемы параметров: int64 и enum в query, все места и формы массивов, только path, тело рядом с query, deepObject по waiver'у, заголовки в разном регистре, строки на границе транспорта (пустой сегмент, пробел по краю, `;` в cookie) | схема на каждое место; `fake()` проходит проверку запроса; query у `searchDeep` и header у `mixedCaseHeaders` отказывают с причиной |
 | `unknown_format.yaml` | `format: my-custom-tag` на строке | отклоняется при `unknown_formats: reject`, проходит при `annotate` |
 | `recursive.yaml` | самоссылка (`Node`) и взаимный цикл из трёх схем (`Alpha → Beta → Gamma → Alpha`) | разбирается, контракт помечается рекурсивным |
 | `recursive_d42.yaml` | четыре операции: обязательный рекурсивный массив при нерекурсивном запросе, цикл через `oneOf` с выходом, отказ d42 только в ответе, цикл только через обязательное поле | d42 генерируется с отсечкой цикла по направлениям; у `Chain` нет конечного значения |
