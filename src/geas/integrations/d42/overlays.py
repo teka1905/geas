@@ -38,7 +38,11 @@
    ручной схемы обязан совпасть с типом сгенерированного листа; если лист — это
    union литералов (``enum``), ручной генератор обязан быть его подмножеством.
    Несовпадение типа или значение вне ``enum`` — ошибка сразу, при сборке overlay'я.
-6. **Узел, на котором отсечён цикл, overlay не пересекает.** За ним — рекурсивная
+6. **Строковый вид параметра прозрачен.** Лист ``serialized(schema.int...)`` (d42-схема
+   параметров запроса) подменяется типизированной схемой: ``ValidIDSchema`` вместо
+   ``schema.int`` даст ``fake()`` строки с осмысленными идентификаторами. Для
+   массива одной строкой ``EACH`` ведёт внутрь вложенного ``schema.list``.
+7. **Узел, на котором отсечён цикл, overlay не пересекает.** За ним — рекурсивная
    часть контракта, которую d42 не разворачивает (см.
    :mod:`~geas.integrations.d42.recursion`); путь до такого узла или сквозь него —
    :class:`~geas.errors.ContractOverlayError` с подсказкой задать значение через ``%``.
@@ -92,6 +96,7 @@ from geas.errors import ContractOverlayError
 from geas.paths import ARRAY_ITEMS, format_contract_path
 
 from .recursion import RecursiveRefSchema
+from .serialized import SerializedSchema, serialized
 
 __all__ = [
     "EACH",
@@ -193,6 +198,20 @@ def _apply(
                 f"overlay {where}: нельзя спускаться внутрь union — сгенерированный "
                 f"узел допускает {len(types)} разных форм"
             )
+
+    if isinstance(node, SerializedSchema):
+        if not path and isinstance(manual, SerializedSchema):
+            if manual.delimiter != node.delimiter:
+                raise ContractOverlayError(
+                    f"overlay {where}: разделитель ручной схемы {manual.delimiter!r} не "
+                    f"совпадает с контрактом {node.delimiter!r}"
+                )
+            manual = manual.inner
+        return serialized(
+            _apply(node.inner, path, manual, full=full),
+            delimiter=node.delimiter,
+            location=node.location,
+        )
 
     if isinstance(node, RecursiveRefSchema):
         raise ContractOverlayError(

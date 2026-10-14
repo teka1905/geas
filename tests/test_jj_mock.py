@@ -229,6 +229,57 @@ async def test_mock_records_query_parameters(
     assert ("limit", "25") in params
 
 
+async def test_query_params_are_pinned_in_the_form_the_client_sends(
+    jj_server: JJServer,  # noqa: F811 - фикстура
+    operations: Any,
+) -> None:
+    """``True`` закрепляется как ``"true"``: клиент отправляет флаг именно так.
+
+    Раньше значение уходило в матчер через ``str()`` — ``"True"`` — и мок молча не
+    совпадал ни с одним запросом.
+    """
+    async with operations.api.list_documents.mock(
+        response=PAGE,
+        status=200,
+        path_params={"workspaceId": WORKSPACE_ID},
+        query_params={"includeArchived": True, "limit": 25, "status": "review"},
+        wait_for_requests=1,
+    ) as mock:
+        status, body = await send_json(
+            jj_server,
+            "GET",
+            f"{DOCUMENTS_PATH}?includeArchived=true&limit=25&status=draft&status=review",
+        )
+
+    assert (status, body) == (200, PAGE)
+    assert len(mock.history) == 1
+
+
+@pytest.mark.parametrize(
+    "query_params, error, message",
+    [
+        ({"limt": 25}, ContractMockError, "которых нет в контракте"),
+        ({"limit": 0}, RequestContractError, "query_params['limit']"),
+        ({"limit": "много"}, RequestContractError, "не приводится к типу 'integer'"),
+        ({"includeArchived": "True"}, RequestContractError, "не приводится к типу 'boolean'"),
+        ({"status": "archived"}, RequestContractError, "query_params['status']"),
+        ({"status": ["draft"]}, ContractMockError, "сравнивает одно значение"),
+    ],
+)
+def test_query_params_outside_the_contract_fail_when_the_mock_is_created(
+    operations: Any, query_params: dict[str, Any], error: type[Exception], message: str
+) -> None:
+    """Неверный параметр виден сразу, а не как «перехвачено 0 запросов» на выходе."""
+    with pytest.raises(error) as info:
+        operations.api.list_documents.mock(
+            response=PAGE,
+            status=200,
+            path_params={"workspaceId": WORKSPACE_ID},
+            query_params=query_params,
+        )
+    assert message in str(info.value)
+
+
 async def test_thin_wrapper_keeps_migration_compatible_api(
     jj_server: JJServer,  # noqa: F811 - фикстура
     operations: Any,

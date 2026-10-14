@@ -92,6 +92,9 @@ class ArtifactSet:
     #: Ветки ``allOf``, выброшенные из d42 как пустые:
     #: ``(операция, направление, contract path allOf, ветка, причина)``.
     d42_dropped_branches: tuple[tuple[str, str, str, str, str], ...] = ()
+    #: Места запроса, для которых d42-схема параметров не построена:
+    #: ``(операция, место, причина)``.
+    d42_parameters_refused: tuple[tuple[str, str, str], ...] = ()
 
     def paths(self) -> tuple[str, ...]:
         """Owned-пути в стабильном порядке."""
@@ -140,10 +143,14 @@ def render_artifacts(manifest: Manifest, result: BuildResult) -> ArtifactSet:
 
     # d42 рендерится первым: его отказ не должен ронять операцию целиком, но обязан
     # быть записан в документ контракта до того, как документ попадёт в артефакт.
-    d42_files, d42_disabled, cycle_cuts, dropped = _render_d42_modules(result)
+    d42_files, d42_disabled, cycle_cuts, dropped, refused = _render_d42_modules(result)
 
     for built in result.operations:
-        document = _document_with_d42_status(built, d42_disabled.get(built.contract.key, {}))
+        document = _document_with_d42_status(
+            built,
+            d42_disabled.get(built.contract.key, {}),
+            refused.get(built.contract.key, {}),
+        )
         slug = document["slug"]
         index[built.contract.key] = slug
         fingerprints[built.contract.key] = semantic_fingerprint(document)
@@ -184,10 +191,17 @@ def render_artifacts(manifest: Manifest, result: BuildResult) -> ArtifactSet:
         ),
         d42_cycle_cuts=tuple(sorted(cycle_cuts)),
         d42_dropped_branches=tuple(sorted(dropped)),
+        d42_parameters_refused=tuple(
+            (key, location, reason)
+            for key, locations in sorted(refused.items())
+            for location, reason in sorted(locations.items())
+        ),
     )
 
 
-def _document_with_d42_status(built: Any, reasons: Mapping[str, str]) -> dict[str, Any]:
+def _document_with_d42_status(
+    built: Any, reasons: Mapping[str, str], refused_parameters: Mapping[str, str]
+) -> dict[str, Any]:
     """Документ контракта с учётом того, удалось ли отрендерить d42.
 
     Конструкция может быть точно выразима контрактом и JSON Schema, но не
@@ -197,21 +211,43 @@ def _document_with_d42_status(built: Any, reasons: Mapping[str, str]) -> dict[st
     не теряет d42 из-за ответа и наоборот. Причина записывается в артефакт
     (``<direction>_reason`` и сводная ``reason``) и всплывает в ``update``, а
     обращение к отсутствующей d42-схеме падает с этой же причиной.
+
+    Параметры запроса отключаются ещё точнее — по месту (query, path, ...): причина
+    ложится в ``parameters_reasons``, а схема места исчезает из ``parameters``.
     """
     document: dict[str, Any] = built.document
-    if not reasons:
+    if not reasons and not refused_parameters:
         return document
     patched = dict(document)
     section = dict(document.get("d42", {}))
     for direction, reason in sorted(reasons.items()):
         section[f"{direction}_module"] = None
         section[f"{direction}_reason"] = reason
-    section["enabled"] = bool(section.get("request_module") or section.get("response_module"))
-    section["reason"] = _describe_reasons(reasons)
+    if refused_parameters:
+        exports = {
+            location: name
+            for location, name in (section.get("parameters") or {}).items()
+            if location not in refused_parameters
+        }
+        section["parameters"] = exports
+        section["parameters_reasons"] = dict(sorted(refused_parameters.items()))
+        if not exports:
+            section["parameters_module"] = None
+    section["enabled"] = bool(
+        section.get("request_module")
+        or section.get("response_module")
+        or section.get("parameters_module")
+    )
+    if reasons:
+        section["reason"] = _describe_reasons(reasons)
     patched["d42"] = section
     patched["unsupported"] = [
         *document.get("unsupported", []),
         *(f"d42 ({direction}): {reason}" for direction, reason in sorted(reasons.items())),
+        *(
+            f"d42 (параметры {location}): {reason}"
+            for location, reason in sorted(refused_parameters.items())
+        ),
     ]
     if "request" in reasons:
         patched["request"] = _strip_d42_exports(document["request"], key="bodies")
@@ -246,6 +282,7 @@ def _render_d42_modules(
     dict[str, dict[str, str]],
     list[tuple[str, str, str, str]],
     list[tuple[str, str, str, str, str]],
+    dict[str, dict[str, str]],
 ]:
     """Отрендерить d42-модули, отключая d42 точечно там, где он невыразим.
 
@@ -261,17 +298,23 @@ def _render_d42_modules(
     Рекурсия d42 не отключает: цикл отсекается, и места отсечки возвращаются
     третьим элементом для отчёта ``geas update``. Четвёртый — ветки ``allOf``,
     которые распределение выбросило как пустые (они не допускают ни одного значения
-    ещё в контракте).
+    ещё в контракте). Пятый — места запроса, для которых не построена d42-схема
+    параметров, с причиной: место отказывает отдельно, не задевая ни соседние места,
+    ни тело запроса.
     """
     needed = [
         built for built in result.operations if (built.document.get("d42") or {}).get("enabled")
     ]
     if not needed:
-        return [], {}, [], []
+        return [], {}, [], [], {}
     from .errors import MissingExtraError
 
     try:
-        from .integrations.d42.renderer import module_notes, render_module
+        from .integrations.d42.renderer import (
+            module_notes,
+            render_module,
+            render_parameters_module,
+        )
     except MissingExtraError:
         # Интеграция сама объяснила, чего не хватает (например, d42 слишком старая).
         raise
@@ -285,8 +328,23 @@ def _render_d42_modules(
     disabled: dict[str, dict[str, str]] = {}
     cuts: list[tuple[str, str, str, str]] = []
     dropped: list[tuple[str, str, str, str, str]] = []
+    refused: dict[str, dict[str, str]] = {}
     for built in needed:
         section = built.document["d42"]
+        parameters_module = section.get("parameters_module")
+        if parameters_module:
+            rendered = render_parameters_module(
+                module_docstring=(
+                    f"Generated d42-схемы параметров запроса операции ``{built.contract.key}``."
+                ),
+                parameter_sets=_parameter_sets(built, section.get("parameters") or {}),
+            )
+            if rendered.content is not None:
+                files.append(
+                    Artifact(path=f"_d42/{parameters_module}.py", content=rendered.content)
+                )
+            if rendered.refused:
+                refused[built.contract.key] = dict(rendered.refused)
         for direction, definitions, roots in (
             ("request", built.request_definitions, _d42_roots(built, "request")),
             ("response", built.response_definitions, _d42_roots(built, "response")),
@@ -326,7 +384,19 @@ def _render_d42_modules(
                 ),
             )
         )
-    return files, disabled, cuts, dropped
+    return files, disabled, cuts, dropped, refused
+
+
+def _parameter_sets(built: Any, exports: Mapping[str, str]) -> list[tuple[str, Any, list[Any]]]:
+    """``(имя переменной, место, параметры места)`` для рендера модуля параметров."""
+    from .models import ParameterLocation
+
+    parameters = built.contract.request.parameters()
+    sets: list[tuple[str, Any, list[Any]]] = []
+    for value, name in sorted(exports.items()):
+        location = ParameterLocation(value)
+        sets.append((name, location, [item for item in parameters if item.location is location]))
+    return sets
 
 
 def _d42_roots(built: Any, direction: str) -> list[Any]:

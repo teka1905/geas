@@ -55,7 +55,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from geas.errors import ArtifactError, NamespaceCollisionError, RefResolutionError
+from geas.errors import (
+    ArtifactError,
+    NamespaceCollisionError,
+    RefResolutionError,
+    UnsupportedConstructError,
+)
 from geas.integrations.d42.converter import (
     _JSON_INT,
     DroppedBranchNote,
@@ -66,18 +71,28 @@ from geas.integrations.d42.converter import (
     _NoLiteral,
     _Plan,
     _Ref,
+    _SerializedPlan,
     _UnionPlan,
     cut_cycles,
     cut_targets,
     plan_node,
+    plan_parameters,
     referenced_names,
     topological_order,
 )
 from geas.jsonschema_gen import definitions_json_schema
-from geas.models import SchemaNode
+from geas.models import ParameterContract, ParameterLocation, SchemaNode
 from geas.naming import d42_schema_name, python_identifier
 
-__all__ = ["ModuleNotes", "cycle_cuts", "module_notes", "render_expression", "render_module"]
+__all__ = [
+    "ModuleNotes",
+    "ParametersModule",
+    "cycle_cuts",
+    "module_notes",
+    "render_expression",
+    "render_module",
+    "render_parameters_module",
+]
 
 #: Максимальная длина строки в сгенерированном модуле.
 LINE_LENGTH = 100
@@ -95,6 +110,7 @@ _HEADER = "from __future__ import annotations\n\nfrom d42 import optional, schem
 _TYPED_DICT_IMPORT = "from geas.integrations.d42.typed_dict import typed_dict\n"
 _RECURSION_IMPORT = "from geas.integrations.d42.recursion import RecursionContract\n"
 _JSON_INT_IMPORT = "from geas.integrations.d42.json_int import json_int\n"
+_SERIALIZED_IMPORT = "from geas.integrations.d42.serialized import serialized\n"
 
 #: Имя переменной модуля с контрактом рекурсии. Не пересекается с generated-именами:
 #: у определений и экспортов обязательный суффикс ``Schema``.
@@ -172,6 +188,62 @@ def render_module(
 
     text = "\n\n".join(blocks)
     return "\n".join(line.rstrip() for line in text.split("\n")).rstrip("\n") + "\n"
+
+
+@dataclass(frozen=True, slots=True)
+class ParametersModule:
+    """Модуль d42-схем параметров запроса и то, что в него не попало."""
+
+    #: Исходник модуля; ``None``, если ни одно место не выразилось в d42.
+    content: str | None
+    #: ``(место, имя переменной)`` мест, для которых схема сгенерирована.
+    exports: tuple[tuple[str, str], ...]
+    #: ``(место, причина)`` мест, для которых d42 не строится.
+    refused: tuple[tuple[str, str], ...]
+
+
+def render_parameters_module(
+    *,
+    module_docstring: str,
+    parameter_sets: Sequence[tuple[str, ParameterLocation, Sequence[ParameterContract]]],
+) -> ParametersModule:
+    """Собрать модуль d42-схем параметров: по одной схеме на место запроса.
+
+    ``parameter_sets`` — ``(имя переменной, место, параметры места)``. Места
+    независимы: если одно не выражается в d42 (см.
+    :func:`~geas.integrations.d42.converter.plan_parameters`), оно попадает в
+    ``refused`` с причиной, а остальные рендерятся.
+    """
+    plans: dict[str, _Plan] = {}
+    exports: list[tuple[str, str]] = []
+    refused: list[tuple[str, str]] = []
+    for name, location, parameters in parameter_sets:
+        python_identifier(name, context=f"экспорт d42-схемы {name!r}")
+        if name in plans:
+            raise NamespaceCollisionError(f"два места параметров дают одно имя {name!r}")
+        try:
+            plans[name] = plan_parameters(location, parameters)
+        except UnsupportedConstructError as error:
+            refused.append((location.value, error.base_message))
+            continue
+        exports.append((location.value, name))
+    if not plans:
+        return ParametersModule(content=None, exports=(), refused=tuple(sorted(refused)))
+
+    header = _HEADER
+    if any(_uses_json_int(plan) for plan in plans.values()):
+        header += _JSON_INT_IMPORT
+    if any(_uses_serialized(plan) for plan in plans.values()):
+        header += _SERIALIZED_IMPORT
+    blocks = [_docstring(module_docstring), header]
+    blocks.extend(_assignment(name, plans[name], {}) for name in sorted(plans))
+    exported = "\n".join(f'{" " * _INDENT}"{name}",' for name in sorted(plans))
+    blocks.append(f"__all__ = [\n{exported}\n]")
+    text = "\n\n".join(blocks)
+    content = "\n".join(line.rstrip() for line in text.split("\n")).rstrip("\n") + "\n"
+    return ParametersModule(
+        content=content, exports=tuple(sorted(exports)), refused=tuple(sorted(refused))
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,6 +409,12 @@ def _render(plan: _Plan, refs: Mapping[str, str], *, indent: int, used: int) -> 
     if isinstance(plan, _ListPlan):
         items = _render(plan.items, refs, indent=indent + _INDENT, used=indent + _INDENT)
         return f"schema.list(\n{pad}{items}\n{close}){_calls(plan.calls)}"
+    if isinstance(plan, _SerializedPlan):
+        inner = _render(plan.inner, refs, indent=indent + _INDENT, used=indent + _INDENT)
+        lines = [f"{pad}{inner},"]
+        lines.extend(f"{pad}{name}={_literal(value)}," for name, value in _serialized_options(plan))
+        body = "\n".join(lines)
+        return f"serialized(\n{body}\n{close})"
     # Скалярные листы и ссылки не разбиваются: переносить нечего.
     return single
 
@@ -365,6 +443,10 @@ def _single(plan: _Plan, refs: Mapping[str, str]) -> str:
         return "schema.dict({" + ", ".join(items) + "})"
     if isinstance(plan, _ListPlan):
         return f"schema.list({_single(plan.items, refs)}){_calls(plan.calls)}"
+    if isinstance(plan, _SerializedPlan):
+        arguments = [_single(plan.inner, refs)]
+        arguments.extend(f"{name}={_literal(value)}" for name, value in _serialized_options(plan))
+        return f"serialized({', '.join(arguments)})"
     variants = ", ".join(_single(variant, refs) for variant in plan.variants)
     return f"schema.any({variants})"
 
@@ -420,6 +502,29 @@ def _uses_typed_dict(plan: _Plan) -> bool:
         return _uses_typed_dict(plan.items)
     if isinstance(plan, _UnionPlan):
         return any(_uses_typed_dict(variant) for variant in plan.variants)
+    if isinstance(plan, _SerializedPlan):
+        return _uses_typed_dict(plan.inner)
+    return False
+
+
+def _serialized_options(plan: _SerializedPlan) -> list[tuple[str, str]]:
+    """Заданные именованные аргументы ``serialized(...)`` в порядке сигнатуры."""
+    options = [("delimiter", plan.delimiter), ("location", plan.location)]
+    return [(name, value) for name, value in options if value is not None]
+
+
+def _uses_serialized(plan: _Plan) -> bool:
+    """Есть ли строковый вид параметра в плане или его дочерних узлах."""
+    if isinstance(plan, _SerializedPlan):
+        return True
+    if isinstance(plan, _DictPlan):
+        return (plan.additional is not None and _uses_serialized(plan.additional)) or any(
+            _uses_serialized(child) for _, child, _ in plan.entries
+        )
+    if isinstance(plan, _ListPlan):
+        return _uses_serialized(plan.items)
+    if isinstance(plan, _UnionPlan):
+        return any(_uses_serialized(variant) for variant in plan.variants)
     return False
 
 
@@ -435,6 +540,8 @@ def _uses_json_int(plan: _Plan) -> bool:
         return _uses_json_int(plan.items)
     if isinstance(plan, _UnionPlan):
         return any(_uses_json_int(variant) for variant in plan.variants)
+    if isinstance(plan, _SerializedPlan):
+        return _uses_json_int(plan.inner)
     return False
 
 

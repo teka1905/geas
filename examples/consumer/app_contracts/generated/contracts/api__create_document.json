@@ -5,6 +5,10 @@
   },
   "d42": {
     "enabled": true,
+    "parameters": {
+      "path": "GeneratedApiCreateDocumentPathParamsSchema"
+    },
+    "parameters_module": "api__create_document_request_parameters",
     "recursive": false,
     "request_module": "api__create_document_request",
     "response_module": "api__create_document_response"

@@ -10,7 +10,7 @@
 ```toml
 # pyproject.toml тестового проекта
 dependencies = [
-    "geas[d42,jj]==0.4.0",
+    "geas[d42,jj]==0.6.0",
 ]
 ```
 
@@ -172,6 +172,19 @@ QueueDetailsSchema = overlay_generators(
 ```bash
 geas -m contracts/manifest.yaml show v2.getQueue --status 200
 ```
+
+Ручные схемы query-, path- и header-параметров заменяются так же. Значения в
+generated-схеме параметров — строки, как в запросе, а границы и `enum` берутся из
+контракта:
+
+```python
+from geas import Direction
+
+GetQueueQueryParamsSchema = operations.v2.get_queue.d42_schema(Direction.REQUEST, part="query")
+```
+
+Имя схемы места печатает `geas show v2.getQueue --part query`. Подробнее — в
+[README](../README.md#d42-схемы-параметров-запроса).
 
 ## 8. Добавить `check` в CI
 

@@ -59,7 +59,7 @@ from .manifest import (
     dump_manifest,
     load_manifest,
 )
-from .models import Direction
+from .models import Direction, ParameterLocation
 from .naming import python_path_from_key
 from .normalization.raw import RawOperation
 from .normalization.refs import SpecRegistry
@@ -143,8 +143,13 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument(
         "--direction",
         choices=[Direction.REQUEST.value, Direction.RESPONSE.value],
-        default=Direction.RESPONSE.value,
-        help="какое направление показать (по умолчанию response)",
+        default=None,
+        help="какое направление показать (по умолчанию response, с --part — request)",
+    )
+    show.add_argument(
+        "--part",
+        choices=[item.value for item in ParameterLocation],
+        help="показать параметры одного места запроса вместо тела (только для request)",
     )
     show.add_argument("--status", help="статус ответа: число или 'default'")
     show.add_argument("--content-type", help="content type; обязателен, если вариантов несколько")
@@ -544,6 +549,8 @@ def _cmd_update(args: argparse.Namespace) -> int:
         print(f"  удалён устаревший артефакт: {path}")
     for key, reason in artifacts.d42_disabled:
         print(f"  {key}: d42-схемы не сгенерированы — {reason}")
+    for key, location, reason in artifacts.d42_parameters_refused:
+        print(f"  {key} (параметры {location}): d42-схема не сгенерирована — {reason}")
     for built in result.operations:
         for reason in built.unsupported:
             print(f"  {built.contract.key}: не поддержано — {reason}")
@@ -655,7 +662,13 @@ def _cmd_show(args: argparse.Namespace) -> int:
     except OperationLookupError as error:
         raise _UsageError(str(error)) from error
 
+    if args.direction is None:
+        args.direction = (
+            Direction.REQUEST.value if args.part is not None else Direction.RESPONSE.value
+        )
     direction = Direction(args.direction)
+    if args.part is not None:
+        return _show_parameters(handle, direction, args)
     view: RequestBodyView | ResponseView
     try:
         if direction is Direction.RESPONSE:
@@ -671,6 +684,46 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
     if args.json:
         payload = _show_payload(handle.key, view, direction)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return EXIT_OK
+    print(view.describe(max_depth=args.max_depth))
+    return EXIT_OK
+
+
+def _show_parameters(handle: Any, direction: Direction, args: argparse.Namespace) -> int:
+    """``show --part``: параметры одного места запроса и их d42-схема."""
+    if direction is not Direction.REQUEST:
+        raise _UsageError("--part относится только к запросу: параметры есть только у request")
+    for flag, value in (("--status", args.status), ("--content-type", args.content_type)):
+        if value is not None:
+            raise _UsageError(f"{flag} не сочетается с --part: у параметров нет вариантов")
+    try:
+        view = handle.request.parameter_set(args.part)
+    except OperationLookupError as error:
+        raise _UsageError(str(error)) from error
+    if args.json:
+        payload = {
+            "operation": handle.key,
+            "direction": direction.value,
+            "part": view.location.value,
+            "parameters": [
+                {
+                    "name": item.name,
+                    "required": item.required,
+                    "style": item.style,
+                    "explode": item.explode,
+                    "schema": item.json_schema,
+                }
+                for item in view.parameters
+            ],
+            "contract_file": _as_text(view.contract_file),
+            "contract_path": view.contract_path,
+            "d42_module": view.d42_module,
+            "d42_export": view.d42_export,
+            "d42_reference": view.d42_reference,
+            "d42_reason": view.d42_reason,
+            "d42_source_path": _as_text(view.d42_source_path),
+        }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return EXIT_OK
     print(view.describe(max_depth=args.max_depth))

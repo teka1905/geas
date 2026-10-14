@@ -29,11 +29,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..models import Direction
+from ..models import Direction, ParameterLocation
 
 __all__ = [
     "DEFAULT_MAX_DEPTH",
     "describe_contract",
+    "describe_parameters",
     "escape_pointer_token",
     "join_pointer",
     "resolve_json_pointer",
@@ -578,6 +579,53 @@ def describe_contract(
     if contract_path:
         lines.extend(["", "JSON Schema:", f"  {contract_path}"])
     lines.extend(["", "d42:", f"  {d42_reference or 'схемы не сгенерированы'}"])
+    if d42_source_path is not None:
+        lines.extend(["", "d42 source:", f"  {d42_source_path}"])
+    return "\n".join(lines)
+
+
+def describe_parameters(
+    *,
+    operation_key: str | None = None,
+    location: ParameterLocation,
+    parameters: Sequence[tuple[str, bool, str, bool, Mapping[str, Any]]],
+    contract_path: str | None = None,
+    d42_reference: str | None = None,
+    d42_reason: str | None = None,
+    d42_source_path: Path | str | None = None,
+    max_depth: int = DEFAULT_MAX_DEPTH,
+) -> str:
+    """Собрать описание параметров одного места запроса.
+
+    ``parameters`` — ``(имя, обязательность, style, explode, JSON Schema значения)``.
+    Параметры печатаются как поля объекта: так видно и обязательность, и
+    ограничения каждого значения; сериализация идёт отдельным блоком.
+    """
+    lines: list[str] = []
+    if operation_key:
+        lines.append(operation_key)
+    lines.extend([f"Request {location.value}-параметры", ""])
+    as_object: dict[str, Any] = {
+        "type": "object",
+        "properties": {name: dict(schema) for name, _, _, _, schema in parameters},
+        "required": [name for name, required, _, _, _ in parameters if required],
+    }
+    if location is ParameterLocation.PATH:
+        # Набор path-параметров задаёт шаблон маршрута: других там не бывает.
+        as_object["additionalProperties"] = False
+    lines.extend(_SchemaTree(as_object, max_depth=max_depth).render())
+    lines.extend(["", "сериализация:"])
+    lines.extend(
+        f"  {name}: style={style}, explode={str(explode).lower()}"
+        for name, _, style, explode, _ in parameters
+    )
+    if contract_path:
+        lines.extend(["", "JSON Schema:", f"  {contract_path}"])
+    if d42_reference:
+        lines.extend(["", "d42:", f"  {d42_reference}"])
+    else:
+        note = f"схема не сгенерирована — {d42_reason}" if d42_reason else "схема не сгенерирована"
+        lines.extend(["", "d42:", f"  {note}"])
     if d42_source_path is not None:
         lines.extend(["", "d42 source:", f"  {d42_source_path}"])
     return "\n".join(lines)
