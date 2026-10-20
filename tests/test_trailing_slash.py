@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,7 @@ import aiohttp
 import pytest
 
 from geas.errors import ManifestError, RequestContractError
-from geas.manifest import Manifest, OperationSpec, SourceSpec
+from geas.manifest import Manifest, OperationSpec, SourceSpec, TemporarySetting
 from geas.runtime.operation import extract_path_params, route_variants
 from jj_server import JJServer, jj_server  # noqa: F401 - сессионная фикстура
 from support import Project, make_project
@@ -229,6 +230,269 @@ def test_changing_the_setting_is_artifact_drift(tmp_path: Path) -> None:
     document["sources"]["lax"]["accept_trailing_slash"] = False
     project.write_manifest(sources=document["sources"], operations=document["operations"])
     assert not project.check().is_clean
+
+
+# ------------------------------------------------- временная настройка операции
+
+
+def in_days(days: int) -> dt.date:
+    return dt.date.today() + dt.timedelta(days=days)
+
+
+def temporary(**overrides: Any) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "issue": "SAMSARA-24848",
+        "reason": "спецификация потеряла слэш из @Path бэкенда",
+        "expires_at": in_days(30).isoformat(),
+    }
+    data.update(overrides)
+    return data
+
+
+def test_temporary_setting_enables_the_operation() -> None:
+    spec = OperationSpec.from_dict("a.b", {"source": "main", "accept_trailing_slash": temporary()})
+    assert spec.accept_trailing_slash is True
+    assert spec.trailing_slash_until == TemporarySetting(
+        issue="SAMSARA-24848",
+        reason="спецификация потеряла слэш из @Path бэкенда",
+        expires_at=in_days(30),
+    )
+    assert spec.to_dict()["accept_trailing_slash"] == temporary()
+
+
+def test_temporary_setting_accepts_a_yaml_date() -> None:
+    """YAML сам превращает ``2026-12-31`` в дату — это тоже валидный срок."""
+    spec = OperationSpec.from_dict(
+        "a.b", {"source": "main", "accept_trailing_slash": temporary(expires_at=in_days(5))}
+    )
+    assert spec.trailing_slash_until is not None
+    assert spec.trailing_slash_until.expires_at == in_days(5)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"issue": ""}, "issue"),
+        ({"reason": None}, "reason"),
+        ({"expires_at": "завтра"}, "expires_at"),
+        ({"expires_at": dt.datetime(2026, 12, 31, 10, 0)}, "без времени"),
+        ({"owner": "team"}, "неизвестные ключи"),
+    ],
+)
+def test_temporary_setting_is_validated(overrides: dict[str, Any], message: str) -> None:
+    with pytest.raises(ManifestError, match=message):
+        OperationSpec.from_dict(
+            "a.b", {"source": "main", "accept_trailing_slash": temporary(**overrides)}
+        )
+
+
+def test_temporary_setting_requires_expiry() -> None:
+    data = temporary()
+    del data["expires_at"]
+    with pytest.raises(ManifestError, match="expires_at"):
+        OperationSpec.from_dict("a.b", {"source": "main", "accept_trailing_slash": data})
+
+
+def test_source_setting_cannot_be_temporary() -> None:
+    """У источника настройка — свойство сервера, срока у неё нет."""
+    with pytest.raises(ManifestError, match="только у операции"):
+        SourceSpec.from_dict("main", {"path": "a.yaml", "accept_trailing_slash": temporary()})
+
+
+def temporary_project(root: Path, expires_at: dt.date) -> Project:
+    project = make_project(root, package="temporary_contracts")
+    project.write_spec("api/openapi.yaml", SPEC)
+    project.write_manifest(
+        sources={"main": {"path": "api/openapi.yaml", "root": "api"}},
+        operations={
+            "main.loadTree": {
+                "source": "main",
+                "operation_id": "loadTree",
+                "accept_trailing_slash": temporary(expires_at=expires_at.isoformat()),
+            }
+        },
+    )
+    return project
+
+
+def test_temporary_setting_reaches_the_contract(tmp_path: Path) -> None:
+    """В документ контракта попадает только факт включения, а не срок."""
+    project = temporary_project(tmp_path, in_days(30))
+    project.update()
+    document = project.contract_document("main__load_tree")
+    assert document["accept_trailing_slash"] is True
+    assert "SAMSARA-24848" not in str(document)
+
+
+def test_extending_the_term_is_not_artifact_drift(tmp_path: Path) -> None:
+    project = temporary_project(tmp_path, in_days(30))
+    project.update()
+    later = temporary_project(tmp_path, in_days(60))
+    assert later.check().is_clean
+
+
+def test_expired_temporary_setting_fails_the_build(tmp_path: Path) -> None:
+    project = temporary_project(tmp_path, in_days(-1))
+    with pytest.raises(ManifestError, match="срок истёк"):
+        project.load().check_temporary_settings(today=dt.date.today())
+
+    result = project.cli("update")
+    assert result.returncode != 0
+    assert "срок истёк" in result.stderr
+
+
+def test_temporary_setting_obeys_max_days(tmp_path: Path) -> None:
+    project = temporary_project(tmp_path, in_days(91))
+    with pytest.raises(ManifestError, match="waiver_max_days"):
+        project.load().check_temporary_settings(today=dt.date.today())
+
+
+@pytest.mark.parametrize(("days", "phrase"), [(3, "осталось дней: 3"), (0, "истекает сегодня")])
+def test_expiring_temporary_setting_is_a_warning(tmp_path: Path, days: int, phrase: str) -> None:
+    project = temporary_project(tmp_path, in_days(days))
+    result = project.cli("update")
+    assert result.returncode == 0, result.stderr
+    assert "accept_trailing_slash операции main.loadTree скоро истекает" in result.stderr
+    assert phrase in result.stderr
+    assert "SAMSARA-24848" in result.stderr
+
+
+def test_far_temporary_setting_is_silent(tmp_path: Path) -> None:
+    project = temporary_project(tmp_path, in_days(30))
+    result = project.cli("update")
+    assert result.returncode == 0, result.stderr
+    assert "скоро истекает" not in result.stderr
+
+
+# ------------------------------------------------------ пересечение маршрутов
+
+TWIN_SPEC = """\
+openapi: "3.0.3"
+
+info:
+  title: Twin API
+  version: "1.0.0"
+
+paths:
+  /twin:
+    get:
+      operationId: twinPlain
+      responses:
+        "204":
+          description: Готово
+  /twin/:
+    get:
+      operationId: twinSlash
+      responses:
+        "204":
+          description: Готово
+    post:
+      operationId: twinSlashPost
+      responses:
+        "204":
+          description: Готово
+  /things/{id}:
+    get:
+      operationId: getThing
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "204":
+          description: Готово
+  /things/{thingId}/:
+    get:
+      operationId: getThingSlash
+      parameters:
+        - {name: thingId, in: path, required: true, schema: {type: string}}
+      responses:
+        "204":
+          description: Готово
+"""
+
+
+def twin_project(
+    root: Path, *, source: dict[str, Any], operations: dict[str, Any] | None = None
+) -> Project:
+    project = make_project(root, package="twin_contracts")
+    project.write_spec("api/openapi.yaml", TWIN_SPEC)
+    project.write_manifest(
+        sources={"main": {"path": "api/openapi.yaml", "root": "api", "selection": "all", **source}},
+        operations=operations or {},
+    )
+    return project
+
+
+def test_strict_twins_coexist(tmp_path: Path) -> None:
+    """Без настройки ``/twin`` и ``/twin/`` — разные маршруты, как и в спецификации."""
+    twin_project(tmp_path, source={}).build()
+
+
+def test_setting_that_merges_two_operations_is_rejected(tmp_path: Path) -> None:
+    project = twin_project(tmp_path, source={"accept_trailing_slash": True})
+    with pytest.raises(ManifestError, match="принимают один и тот же маршрут") as info:
+        project.build()
+    assert "main.getThing" in str(info.value)
+
+
+def test_overlap_is_found_through_path_parameter_names(tmp_path: Path) -> None:
+    project = twin_project(
+        tmp_path,
+        source={},
+        operations={
+            "main.getThing": {
+                "source": "main",
+                "operation_id": "getThing",
+                "accept_trailing_slash": True,
+            }
+        },
+    )
+    with pytest.raises(ManifestError, match=r"main\.getThingSlash"):
+        project.build()
+
+
+def test_overlap_names_every_operation_to_switch_off(tmp_path: Path) -> None:
+    """Маршруты-близнецы: настройка любого из них заходит на маршрут другого."""
+    project = twin_project(tmp_path, source={"accept_trailing_slash": True})
+    with pytest.raises(ManifestError) as info:
+        project.build()
+    assert "accept_trailing_slash: false у 'main.getThing', 'main.getThingSlash'" in str(info.value)
+
+
+def test_overlap_is_resolved_by_switching_twins_off(tmp_path: Path) -> None:
+    switched_off = {
+        key: {"source": "main", "operation_id": operation_id, "accept_trailing_slash": False}
+        for key, operation_id in {
+            "main.twinPlain": "twinPlain",
+            "main.twinSlash": "twinSlash",
+            "main.getThing": "getThing",
+            "main.getThingSlash": "getThingSlash",
+        }.items()
+    }
+    project = twin_project(
+        tmp_path, source={"accept_trailing_slash": True}, operations=switched_off
+    )
+    built = project.build()
+    assert "accept_trailing_slash" not in built.by_key("main.twinPlain").document
+    # Другой метод на том же маршруте не пересекается и сохраняет настройку источника.
+    assert built.by_key("main.twinSlashPost").document["accept_trailing_slash"] is True
+
+
+def test_overlap_across_sources_is_allowed(tmp_path: Path) -> None:
+    """Разные источники — обычно разные серверы и разные моки."""
+    project = make_project(tmp_path, package="cross_contracts")
+    project.write_spec("api/a.yaml", TWIN_SPEC.replace("/twin/:", "/other/:"))
+    project.write_spec("api/b.yaml", TWIN_SPEC.replace("/twin:", "/other:"))
+    project.write_manifest(
+        sources={
+            "a": {"path": "api/a.yaml", "root": "api", "accept_trailing_slash": True},
+            "b": {"path": "api/b.yaml", "root": "api"},
+        },
+        operations={
+            "a.twinPlain": {"source": "a", "operation_id": "twinPlain"},
+            "b.twinSlash": {"source": "b", "operation_id": "twinSlash"},
+        },
+    )
+    project.build()
 
 
 # ----------------------------------------------- validate_recorded_request

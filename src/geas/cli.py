@@ -392,6 +392,7 @@ def _cmd_add(args: argparse.Namespace) -> int:
     manifest = Manifest.from_dict(candidate, base_dir=manifest_path.parent)
     waivers = load_waivers(manifest.base_dir / manifest.waivers_path)
     waivers.validate(manifest, today=dt.date.today())
+    manifest.check_temporary_settings(today=dt.date.today())
     result = build_contracts(manifest, waivers)
     artifacts = render_artifacts(manifest, result)
     with tempfile.TemporaryDirectory(prefix="geas-add-") as staging:
@@ -518,6 +519,7 @@ def _load(args: argparse.Namespace) -> tuple[Manifest, WaiverSet]:
     manifest = load_manifest(args.manifest)
     waivers = load_waivers(manifest.base_dir / manifest.waivers_path)
     waivers.validate(manifest, today=dt.date.today())
+    manifest.check_temporary_settings(today=dt.date.today())
     return manifest, waivers
 
 
@@ -530,12 +532,20 @@ def _report_waivers(manifest: Manifest, waivers: WaiverSet) -> None:
 
     Истечение — предупреждение, а не ошибка: waiver ещё действует, ронять чужую
     сборку не за что. Ошибкой оно станет в тот день, который в ``expires_at``.
+    Так же предупреждают временные настройки операций в manifest.
     """
     for waiver, covered in waivers.subtree_coverage():
         print(f"  waiver {waiver.describe()}: покрыто точек контракта — {covered}")
     expiring = waivers.expiring(today=dt.date.today(), warn_days=manifest.policies.waiver_warn_days)
     for item in expiring:
         print(f"предупреждение: waiver скоро истекает — {item.describe()}", file=sys.stderr)
+    for key, setting, days_left in manifest.expiring_temporary_settings(today=dt.date.today()):
+        when = "истекает сегодня" if days_left == 0 else f"осталось дней: {days_left}"
+        print(
+            f"предупреждение: accept_trailing_slash операции {key} скоро истекает — {when} "
+            f"(expires_at: {setting.expires_at.isoformat()}, issue: {setting.issue})",
+            file=sys.stderr,
+        )
 
 
 def _cmd_update(args: argparse.Namespace) -> int:

@@ -22,6 +22,7 @@ Contract path внутри направления имеет ровно два �
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,6 +65,7 @@ from .paths import (
     is_variant_segment,
     variant_index,
 )
+from .runtime.operation import route_variants
 from .waivers import WaiverSet
 
 __all__ = [
@@ -144,6 +146,7 @@ def build_contracts(manifest: Manifest, waivers: WaiverSet) -> BuildResult:
     waivers.check_operations_known(keys)
     waivers.assert_all_used()
     _check_python_paths(built)
+    _check_route_overlaps(built)
     return BuildResult(operations=tuple(sorted(built, key=lambda item: item.contract.key)))
 
 
@@ -334,6 +337,57 @@ def _check_python_paths(built: list[BuiltOperation]) -> None:
                 f"операция {owner!r} занимает имя {'.'.join(path)}, которое уже используется "
                 f"как namespace операцией {namespaces[path]!r}. Задайте python_path в manifest"
             )
+
+
+#: Шаблонный сегмент маршрута ``{name}``.
+_TEMPLATE_SEGMENT = re.compile(r"\{[^}]*\}")
+
+
+def _route_shapes(item: BuiltOperation) -> frozenset[str]:
+    """Формы маршрута операции с обезличенными шаблонными сегментами."""
+    shape = _TEMPLATE_SEGMENT.sub("{}", item.contract.path)
+    if item.document.get("accept_trailing_slash"):
+        return frozenset(route_variants(shape))
+    return frozenset({shape})
+
+
+def _check_route_overlaps(built: list[BuiltOperation]) -> None:
+    """Не дать ``accept_trailing_slash`` склеить две операции одного источника.
+
+    Если в спецификации есть и ``/x``, и ``/x/`` с одним методом, то со
+    слэшем на конце мок одной операции перехватывал бы запросы другой, а
+    какой ответит, решал бы порядок регистрации. Сравниваются формы шаблонов;
+    пересечения, которые есть и без настройки, — дело самой спецификации.
+    """
+    ordered = sorted(built, key=lambda entry: entry.contract.key)
+    for index, first in enumerate(ordered):
+        for second in ordered[index + 1 :]:
+            if (first.contract.source, first.contract.method) != (
+                second.contract.source,
+                second.contract.method,
+            ):
+                continue
+            if not (
+                first.document.get("accept_trailing_slash")
+                or second.document.get("accept_trailing_slash")
+            ):
+                continue
+            if _route_shapes(first) & _route_shapes(second):
+                # Маршруты различаются только слэшем на конце, так что включённая
+                # настройка любой из двух заходит на маршрут другой.
+                enabled = [
+                    item.contract.key
+                    for item in (first, second)
+                    if item.document.get("accept_trailing_slash")
+                ]
+                raise ManifestError(
+                    f"с accept_trailing_slash операции {first.contract.key!r} "
+                    f"({first.contract.method} {first.contract.path}) и "
+                    f"{second.contract.key!r} ({second.contract.method} "
+                    f"{second.contract.path}) принимают один и тот же маршрут. "
+                    f"Задайте accept_trailing_slash: false у "
+                    f"{', '.join(repr(key) for key in enabled)}"
+                )
 
 
 def _accepts_trailing_slash(spec: OperationSpec | None, source: SourceSpec) -> bool:
