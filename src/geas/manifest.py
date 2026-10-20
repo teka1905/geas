@@ -309,18 +309,26 @@ class NonWaivableAssertion:
         }
 
 
-def _parse_date(raw: Any, where: str) -> dt.date:
-    """Разобрать календарную дату ``YYYY-MM-DD``; дата со временем не принимается."""
+def parse_calendar_date(
+    raw: Any, where: str, *, error: type[ContractError] = ManifestError
+) -> dt.date:
+    """Разобрать календарную дату ``YYYY-MM-DD`` — срок waiver'а или временной настройки.
+
+    YAML сам превращает ``2026-12-31`` в :class:`datetime.date`, а
+    ``2026-12-31T10:00:00Z`` — в :class:`datetime.datetime`, который является
+    подклассом ``date``; без явной проверки он бы проскочил и сломал сравнение
+    уже в рантайме.
+    """
     if isinstance(raw, dt.datetime):
-        raise ManifestError(f"{where}: ожидалась календарная дата без времени, получено {raw!r}")
+        raise error(f"{where}: ожидалась календарная дата без времени, получено {raw!r}")
     if isinstance(raw, dt.date):
         return raw
     if isinstance(raw, str):
         try:
             return dt.date.fromisoformat(raw)
         except ValueError as exc:
-            raise ManifestError(f"{where}: {raw!r} не разбирается как YYYY-MM-DD") from exc
-    raise ManifestError(f"{where}: ожидалась дата YYYY-MM-DD, получено {raw!r}")
+            raise error(f"{where}: {raw!r} не разбирается как YYYY-MM-DD") from exc
+    raise error(f"{where}: ожидалась дата YYYY-MM-DD, получено {raw!r}")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -345,7 +353,7 @@ class TemporarySetting:
         return cls(
             issue=_require_str(data, "issue", where),
             reason=_require_str(data, "reason", where),
-            expires_at=_parse_date(data["expires_at"], f"{where}.expires_at"),
+            expires_at=parse_calendar_date(data["expires_at"], f"{where}.expires_at"),
         )
 
     def to_dict(self) -> dict[str, Any]:

@@ -10,7 +10,7 @@
 ```toml
 # pyproject.toml тестового проекта
 dependencies = [
-    "geas[d42,jj]==0.6.0",
+    "geas[d42,jj]==0.7.0",
 ]
 ```
 

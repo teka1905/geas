@@ -13,6 +13,7 @@ JSON Pointer внутри него, d42-модуль, имя d42-схемы и �
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -1024,6 +1025,48 @@ def route_variants(template: str) -> tuple[str, ...]:
     if template.endswith("/"):
         return (template, template[:-1])
     return (template, template + "/")
+
+
+@functools.lru_cache(maxsize=4096)
+def _segment_pattern(segment: str) -> re.Pattern[str]:
+    """Регэксп одного сегмента шаблона: переменные — любой непустой текст без ``/``."""
+    pattern: list[str] = []
+    position = 0
+    for match in _TEMPLATE_VARIABLE.finditer(segment):
+        pattern.append(re.escape(segment[position : match.start()]))
+        pattern.append("[^/]+")
+        position = match.end()
+    pattern.append(re.escape(segment[position:]))
+    return re.compile("".join(pattern))
+
+
+def _segments_overlap(first: str, second: str) -> bool:
+    first_templated = _TEMPLATE_VARIABLE.search(first) is not None
+    second_templated = _TEMPLATE_VARIABLE.search(second) is not None
+    if not first_templated and not second_templated:
+        return first == second
+    if first_templated and second_templated:
+        # Пересечение двух шаблонных сегментов в общем случае не вычислить
+        # дёшево; считаем, что пересекаются.
+        return True
+    templated, literal = (first, second) if first_templated else (second, first)
+    return _segment_pattern(templated).fullmatch(literal) is not None
+
+
+def route_templates_overlap(first: str, second: str) -> bool:
+    """Может ли один фактический путь подойти под оба шаблона маршрута.
+
+    Сравнение посегментное: литерал совпадает с равным литералом или с шаблонным
+    сегментом, который его принимает. Два шаблонных сегмента считаются
+    пересекающимися.
+    """
+    first_segments = first.split("/")
+    second_segments = second.split("/")
+    if len(first_segments) != len(second_segments):
+        return False
+    return all(
+        _segments_overlap(left, right) for left, right in zip(first_segments, second_segments)
+    )
 
 
 def extract_path_params(

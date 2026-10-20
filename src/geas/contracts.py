@@ -22,8 +22,7 @@ Contract path внутри направления имеет ровно два �
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .dialects.base import Dialect, detect_dialect
@@ -65,7 +64,7 @@ from .paths import (
     is_variant_segment,
     variant_index,
 )
-from .runtime.operation import route_variants
+from .runtime.operation import route_templates_overlap, route_variants
 from .waivers import WaiverSet
 
 __all__ = [
@@ -339,55 +338,105 @@ def _check_python_paths(built: list[BuiltOperation]) -> None:
             )
 
 
-#: Шаблонный сегмент маршрута ``{name}``.
-_TEMPLATE_SEGMENT = re.compile(r"\{[^}]*\}")
+def _route_forms(item: BuiltOperation, *, with_setting: bool) -> tuple[str, ...]:
+    """Шаблоны маршрута, которые принимает операция — с настройкой или строго."""
+    if with_setting and item.document.get("accept_trailing_slash"):
+        return route_variants(item.contract.path)
+    return (item.contract.path,)
 
 
-def _route_shapes(item: BuiltOperation) -> frozenset[str]:
-    """Формы маршрута операции с обезличенными шаблонными сегментами."""
-    shape = _TEMPLATE_SEGMENT.sub("{}", item.contract.path)
-    if item.document.get("accept_trailing_slash"):
-        return frozenset(route_variants(shape))
-    return frozenset({shape})
+def _forms_overlap(first: BuiltOperation, second: BuiltOperation, *, with_setting: bool) -> bool:
+    return any(
+        route_templates_overlap(left, right)
+        for left in _route_forms(first, with_setting=with_setting)
+        for right in _route_forms(second, with_setting=with_setting)
+    )
 
 
 def _check_route_overlaps(built: list[BuiltOperation]) -> None:
-    """Не дать ``accept_trailing_slash`` склеить две операции одного источника.
+    """Не дать ``accept_trailing_slash`` склеить две операции.
 
-    Если в спецификации есть и ``/x``, и ``/x/`` с одним методом, то со
-    слэшем на конце мок одной операции перехватывал бы запросы другой, а
-    какой ответит, решал бы порядок регистрации. Сравниваются формы шаблонов;
-    пересечения, которые есть и без настройки, — дело самой спецификации.
+    Если ``GET /x`` принимает и ``/x/``, а в спецификации есть ``GET /x/`` (или
+    ``GET /x/{id}`` и ``GET /x/new/``), мок одной операции перехватывал бы
+    запросы другой, а какая ответит, решал бы порядок регистрации. Ошибка — только
+    для пересечений, которые появились из-за настройки: те, что есть и без неё
+    (например, один маршрут под несколькими ключами manifest), — дело самой
+    спецификации. Источники проверяются вместе: все моки регистрируются на одном
+    JJ-сервере.
     """
     ordered = sorted(built, key=lambda entry: entry.contract.key)
-    for index, first in enumerate(ordered):
-        for second in ordered[index + 1 :]:
-            if (first.contract.source, first.contract.method) != (
-                second.contract.source,
-                second.contract.method,
-            ):
-                continue
-            if not (
-                first.document.get("accept_trailing_slash")
-                or second.document.get("accept_trailing_slash")
-            ):
-                continue
-            if _route_shapes(first) & _route_shapes(second):
-                # Маршруты различаются только слэшем на конце, так что включённая
-                # настройка любой из двух заходит на маршрут другой.
-                enabled = [
-                    item.contract.key
-                    for item in (first, second)
-                    if item.document.get("accept_trailing_slash")
-                ]
-                raise ManifestError(
-                    f"с accept_trailing_slash операции {first.contract.key!r} "
-                    f"({first.contract.method} {first.contract.path}) и "
-                    f"{second.contract.key!r} ({second.contract.method} "
-                    f"{second.contract.path}) принимают один и тот же маршрут. "
-                    f"Задайте accept_trailing_slash: false у "
-                    f"{', '.join(repr(key) for key in enabled)}"
-                )
+    # Префиксное дерево по сегментам всех форм маршрута: кандидаты в пары ищутся
+    # только от операций с настройкой и только по совместимым веткам, а не
+    # перебором всех пар. Точное решение по паре — в ``_check_route_pair``.
+    roots: dict[str, _RouteNode] = {}
+    for index, item in enumerate(ordered):
+        root = roots.setdefault(item.contract.method, _RouteNode())
+        for form in _route_forms(item, with_setting=True):
+            root.insert(form.split("/"), index)
+
+    pairs: set[tuple[int, int]] = set()
+    for index, item in enumerate(ordered):
+        if not item.document.get("accept_trailing_slash"):
+            continue
+        root = roots[item.contract.method]
+        for form in _route_forms(item, with_setting=True):
+            for other in root.candidates(form.split("/")):
+                if other != index:
+                    pairs.add((min(index, other), max(index, other)))
+    for first, second in sorted(pairs):
+        _check_route_pair(ordered[first], ordered[second])
+
+
+@dataclass(slots=True)
+class _RouteNode:
+    """Узел префиксного дерева маршрутов: литеральные и шаблонные сегменты."""
+
+    literal: dict[str, _RouteNode] = field(default_factory=dict)
+    templated: dict[str, _RouteNode] = field(default_factory=dict)
+    operations: set[int] = field(default_factory=set)
+
+    def insert(self, segments: list[str], operation: int) -> None:
+        node = self
+        for segment in segments:
+            children = node.templated if "{" in segment else node.literal
+            node = children.setdefault(segment, _RouteNode())
+        node.operations.add(operation)
+
+    def candidates(self, segments: list[str]) -> set[int]:
+        """Операции, чьи формы могут совпасть с ``segments`` (с запасом)."""
+        if not segments:
+            return set(self.operations)
+        head, rest = segments[0], segments[1:]
+        if "{" in head:
+            children = [*self.literal.values(), *self.templated.values()]
+        else:
+            children = list(self.templated.values())
+            if head in self.literal:
+                children.append(self.literal[head])
+        found: set[int] = set()
+        for child in children:
+            found |= child.candidates(rest)
+        return found
+
+
+def _check_route_pair(first: BuiltOperation, second: BuiltOperation) -> None:
+    enabled = [
+        item.contract.key for item in (first, second) if item.document.get("accept_trailing_slash")
+    ]
+    if not enabled:
+        return
+    if not _forms_overlap(first, second, with_setting=True):
+        return
+    if _forms_overlap(first, second, with_setting=False):
+        return
+    raise ManifestError(
+        f"с accept_trailing_slash операции {first.contract.key!r} "
+        f"({first.contract.method} {first.contract.path}) и "
+        f"{second.contract.key!r} ({second.contract.method} "
+        f"{second.contract.path}) принимают один и тот же маршрут. "
+        f"Задайте accept_trailing_slash: false у "
+        f"{', '.join(repr(key) for key in enabled)}"
+    )
 
 
 def _accepts_trailing_slash(spec: OperationSpec | None, source: SourceSpec) -> bool:

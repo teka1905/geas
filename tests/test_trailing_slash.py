@@ -18,7 +18,11 @@ import pytest
 
 from geas.errors import ManifestError, RequestContractError
 from geas.manifest import Manifest, OperationSpec, SourceSpec, TemporarySetting
-from geas.runtime.operation import extract_path_params, route_variants
+from geas.runtime.operation import (
+    extract_path_params,
+    route_templates_overlap,
+    route_variants,
+)
 from jj_server import JJServer, jj_server  # noqa: F401 - сессионная фикстура
 from support import Project, make_project
 
@@ -45,6 +49,14 @@ paths:
           required: true
           schema:
             type: integer
+        - name: expand
+          in: query
+          schema:
+            type: string
+        - name: X-Trace
+          in: header
+          schema:
+            type: string
       responses:
         "204":
           description: Готово
@@ -477,11 +489,11 @@ def test_overlap_is_resolved_by_switching_twins_off(tmp_path: Path) -> None:
     assert built.by_key("main.twinSlashPost").document["accept_trailing_slash"] is True
 
 
-def test_overlap_across_sources_is_allowed(tmp_path: Path) -> None:
-    """Разные источники — обычно разные серверы и разные моки."""
+def test_overlap_across_sources_is_rejected(tmp_path: Path) -> None:
+    """Все моки регистрируются на одном JJ-сервере, источник их не разделяет."""
     project = make_project(tmp_path, package="cross_contracts")
-    project.write_spec("api/a.yaml", TWIN_SPEC.replace("/twin/:", "/other/:"))
-    project.write_spec("api/b.yaml", TWIN_SPEC.replace("/twin:", "/other:"))
+    project.write_spec("api/a.yaml", TWIN_SPEC)
+    project.write_spec("api/b.yaml", TWIN_SPEC)
     project.write_manifest(
         sources={
             "a": {"path": "api/a.yaml", "root": "api", "accept_trailing_slash": True},
@@ -492,7 +504,151 @@ def test_overlap_across_sources_is_allowed(tmp_path: Path) -> None:
             "b.twinSlash": {"source": "b", "operation_id": "twinSlash"},
         },
     )
+    with pytest.raises(ManifestError, match=r"'a\.twinPlain'"):
+        project.build()
+
+
+def test_sources_with_different_base_paths_do_not_overlap(tmp_path: Path) -> None:
+    project = make_project(tmp_path, package="based_contracts")
+    project.write_spec("api/a.yaml", TWIN_SPEC)
+    project.write_spec("api/b.yaml", TWIN_SPEC)
+    project.write_manifest(
+        sources={
+            "a": {
+                "path": "api/a.yaml",
+                "root": "api",
+                "base_path": "/a",
+                "accept_trailing_slash": True,
+            },
+            "b": {"path": "api/b.yaml", "root": "api", "base_path": "/b"},
+        },
+        operations={
+            "a.twinPlain": {"source": "a", "operation_id": "twinPlain"},
+            "b.twinSlash": {"source": "b", "operation_id": "twinSlash"},
+        },
+    )
     project.build()
+
+
+def test_one_route_under_several_keys_is_not_an_overlap(tmp_path: Path) -> None:
+    """Совпадение есть и без настройки — его она не создаёт и не ловит."""
+    project = make_project(tmp_path, package="keys_contracts")
+    project.write_spec("api/openapi.yaml", TWIN_SPEC)
+    project.write_manifest(
+        sources={
+            "main": {"path": "api/openapi.yaml", "root": "api", "accept_trailing_slash": True}
+        },
+        operations={
+            "main.thing": {"source": "main", "operation_id": "getThing"},
+            "main.thingAgain": {
+                "source": "main",
+                "method": "GET",
+                "path": "/things/{id}",
+            },
+        },
+    )
+    project.build()
+
+
+LITERAL_SPEC = """\
+openapi: "3.0.3"
+
+info:
+  title: Literal API
+  version: "1.0.0"
+
+paths:
+  /docs/{id}:
+    get:
+      operationId: getDoc
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "204":
+          description: Готово
+  /docs/new/:
+    get:
+      operationId: newDoc
+      responses:
+        "204":
+          description: Готово
+  /docs/draft:
+    get:
+      operationId: draftDoc
+      responses:
+        "204":
+          description: Готово
+"""
+
+
+def literal_project(root: Path, operations: dict[str, Any]) -> Project:
+    project = make_project(root, package="literal_contracts")
+    project.write_spec("api/openapi.yaml", LITERAL_SPEC)
+    project.write_manifest(
+        sources={"main": {"path": "api/openapi.yaml", "root": "api"}},
+        operations={
+            key: {"source": "main", "operation_id": operation_id, **extra}
+            for key, (operation_id, extra) in operations.items()
+        },
+    )
+    return project
+
+
+def test_template_that_starts_catching_a_literal_route_is_rejected(tmp_path: Path) -> None:
+    """С настройкой ``/docs/{id}`` принял бы ``/docs/new/`` — маршрут другой операции."""
+    project = literal_project(
+        tmp_path,
+        {
+            "main.getDoc": ("getDoc", {"accept_trailing_slash": True}),
+            "main.newDoc": ("newDoc", {}),
+        },
+    )
+    with pytest.raises(ManifestError, match=r"accept_trailing_slash: false у 'main\.getDoc'$"):
+        project.build()
+
+
+def test_literal_overlap_without_the_setting_is_left_to_the_spec(tmp_path: Path) -> None:
+    """``/docs/{id}`` и ``/docs/draft`` пересекаются и без настройки."""
+    project = literal_project(
+        tmp_path,
+        {
+            "main.getDoc": ("getDoc", {"accept_trailing_slash": True}),
+            "main.draftDoc": ("draftDoc", {}),
+        },
+    )
+    project.build()
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "expected"),
+    [
+        ("/a/b", "/a/b", True),
+        ("/a/b", "/a/b/", False),
+        ("/a/{id}", "/a/{other}", True),
+        ("/a/{id}", "/a/new", True),
+        ("/a/{id}", "/a/", False),
+        ("/a/{id}.json", "/a/x.json", True),
+        ("/a/{id}.json", "/a/x.xml", False),
+        ("/a/{id}", "/b/{id}", False),
+    ],
+)
+def test_route_templates_overlap(first: str, second: str, expected: bool) -> None:
+    assert route_templates_overlap(first, second) is expected
+    assert route_templates_overlap(second, first) is expected
+
+
+def test_add_keeps_a_temporary_setting(tmp_path: Path) -> None:
+    project = temporary_project(tmp_path, in_days(30))
+    project.update()
+
+    result = project.cli("add", "main.getItem", "--source", "main", "--operation-id", "getItem")
+
+    assert result.returncode == 0, result.stderr
+    restored = project.load().operation("main.loadTree")
+    assert restored is not None
+    assert restored.trailing_slash_until is not None
+    assert restored.trailing_slash_until.issue == "SAMSARA-24848"
+    assert project.cli("update").returncode == 0
 
 
 # ----------------------------------------------- validate_recorded_request
@@ -564,6 +720,32 @@ async def test_mock_with_path_param_intercepts_both_forms(
         ) as mock:
             assert await call(jj_server, "GET", path) == 204
         assert [item.path for item in mock.requests] == [path]
+
+
+@pytest.mark.parametrize("path", ["/items/5", "/items/5/"])
+async def test_mock_with_unpinned_param_query_and_headers(
+    jj_server: JJServer,  # noqa: F811 - фикстура
+    operations: Any,
+    path: str,
+) -> None:
+    """Обе формы получают одни и те же query и заголовки; параметр разбирает JJ."""
+    async with (
+        operations.lax.get_item.mock(
+            status=204,
+            query_params={"expand": "all"},
+            headers={"X-Trace": "t-1"},
+            wait_for_requests=1,
+        ) as mock,
+        aiohttp.ClientSession() as session,
+    ):
+        async with session.get(f"{jj_server.url}{path}") as response:
+            assert response.status == 404
+        async with session.get(
+            f"{jj_server.url}{path}", params={"expand": "all"}, headers={"X-Trace": "t-1"}
+        ) as response:
+            assert response.status == 204
+
+    assert [item.path for item in mock.requests] == [path]
 
 
 async def test_mock_does_not_intercept_other_routes(
