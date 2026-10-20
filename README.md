@@ -117,6 +117,7 @@ sources:
     selection: explicit                  # explicit (по умолчанию) или all
     # root: api                          # корень для межфайловых $ref; по умолчанию каталог спецификации
     # base_path: /api/v1                 # префикс маршрутов
+    # strip_prefix: /api/search          # снять префикс спецификации (см. ниже)
 
 operations:
   api.createDocument:                    # стабильный ключ операции
@@ -155,6 +156,25 @@ operations:
 Префикс маршрута: в Swagger 2.0 `basePath` входит в маршрут автоматически, в OpenAPI 3.0
 `servers` игнорируется. Чтобы задать или переопределить префикс, используйте `base_path`
 у источника.
+
+Сервис за шлюзом: если спецификация описывает маршруты сервиса (`/api/search/searchTicket`),
+а клиент ходит через шлюз (`/api/search-fulltext/search/searchTicket`), задайте
+`strip_prefix` вместе с `base_path`:
+
+```yaml
+sources:
+  global_search:
+    path: api/global-search/openapi-front.yaml
+    strip_prefix: /api/search            # снимается с маршрута спецификации
+    base_path: /api/search-fulltext/search   # добавляется вместо него
+```
+
+Маршрут операции становится `base_path` + маршрут спецификации без `strip_prefix`; в Swagger 2.0
+маршрут спецификации включает `basePath`, а `base_path` при заданном `strip_prefix` только
+добавляется (не заменяет). Префикс снимается по границе сегмента. Если выбранная операция не
+лежит под `strip_prefix`, генерация падает с ошибкой привязки; невыбранные операции игнорируются
+(`geas list` помечает их `!`). Во всех командах, в `path` операций manifest, drift-guard и
+матчере запросов используется итоговый маршрут. Без `strip_prefix` поведение прежнее.
 
 ### Режимы выбора: `explicit` и `all`
 

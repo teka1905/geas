@@ -178,12 +178,15 @@ class SourceSpec:
     #: Префикс маршрута. ``None`` — взять тот, что диктует сам документ
     #: (``basePath`` в Swagger 2.0, пустая строка в OpenAPI 3.0).
     base_path: str | None = None
+    #: Префикс маршрута спецификации, который снимается до добавления ``base_path``.
+    #: Отображает маршруты сервиса на маршруты клиента за шлюзом. ``None`` — не снимать.
+    strip_prefix: str | None = None
 
     @classmethod
     def from_dict(cls, name: str, data: Any) -> SourceSpec:
         where = f"sources.{name}"
         data = _require_mapping(data, where)
-        _reject_unknown(data, {"path", "root", "selection", "base_path"}, where)
+        _reject_unknown(data, {"path", "root", "selection", "base_path", "strip_prefix"}, where)
         python_identifier(to_snake_case(name), context=f"имя источника {name!r}")
         raw_selection = data.get("selection", Selection.EXPLICIT.value)
         try:
@@ -199,12 +202,22 @@ class SourceSpec:
         base_path = data.get("base_path")
         if base_path is not None and not isinstance(base_path, str):
             raise ManifestError(f"{where}.base_path: ожидалась строка")
+        strip_prefix = data.get("strip_prefix")
+        if strip_prefix is not None:
+            if not isinstance(strip_prefix, str):
+                raise ManifestError(f"{where}.strip_prefix: ожидалась строка")
+            if not strip_prefix.rstrip("/").startswith("/"):
+                raise ManifestError(
+                    f"{where}.strip_prefix: ожидался маршрут вида '/api/v1', получено "
+                    f"{strip_prefix!r}"
+                )
         return cls(
             name=name,
             path=_require_str(data, "path", where),
             root=root,
             selection=selection,
             base_path=base_path,
+            strip_prefix=strip_prefix,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -213,6 +226,8 @@ class SourceSpec:
             data["root"] = self.root
         if self.base_path is not None:
             data["base_path"] = self.base_path
+        if self.strip_prefix is not None:
+            data["strip_prefix"] = self.strip_prefix
         return data
 
 

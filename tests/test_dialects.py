@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from geas.dialects.base import detect_dialect
-from geas.errors import UnsupportedSpecVersionError
+from geas.errors import ManifestBindingError, UnsupportedSpecVersionError
 from support import make_project, spec
 
 _OPERATIONS = ("listDocuments", "createDocument", "deleteDocument")
@@ -172,3 +172,93 @@ def test_collection_formats_map_to_the_same_serialization(tmp_path: Path) -> Non
     # multi → повторяющийся ключ, csv → одно значение через запятую.
     assert left["status"] == ("form", True)
     assert left["tags"] == ("form", False)
+
+
+def _gateway_project(root: Path, fixture: str, filename: str, **source: Any) -> Any:
+    project = make_project(root)
+    project.write_spec(f"api/{filename}", spec("basic", fixture))
+    project.write_manifest(
+        sources={"main": {"path": f"api/{filename}", "selection": "explicit", **source}},
+        operations={"api.listDocuments": {"source": "main", "operation_id": "listDocuments"}},
+    )
+    return project
+
+
+@pytest.mark.parametrize(
+    ("fixture", "filename"), [("openapi30.yaml", "spec.yaml"), ("swagger2.json", "spec.json")]
+)
+def test_strip_prefix_replaces_spec_prefix_with_gateway_prefix(
+    tmp_path: Path, fixture: str, filename: str
+) -> None:
+    """``strip_prefix`` снимает префикс спецификации, ``base_path`` добавляет префикс шлюза."""
+    project = _gateway_project(
+        tmp_path / "p", fixture, filename, strip_prefix="/api/v1", base_path="/gw/docs"
+    )
+
+    result = project.build()
+
+    assert result.operations[0].contract.path == "/gw/docs/workspaces/{workspaceId}/documents"
+
+
+def test_strip_prefix_without_base_path_just_removes_the_prefix(tmp_path: Path) -> None:
+    project = _gateway_project(
+        tmp_path / "p", "openapi30.yaml", "spec.yaml", strip_prefix="/api/v1/"
+    )
+
+    assert project.build().operations[0].contract.path == "/workspaces/{workspaceId}/documents"
+
+
+def test_strip_prefix_mismatch_on_selected_operation_fails(tmp_path: Path) -> None:
+    """Операция вне снимаемого префикса не сохраняет исходный путь молча."""
+    project = _gateway_project(tmp_path / "p", "openapi30.yaml", "spec.yaml", strip_prefix="/other")
+
+    with pytest.raises(ManifestBindingError, match="не начинается со снимаемого префикса"):
+        project.build()
+
+
+def test_strip_prefix_matches_whole_segments_only(tmp_path: Path) -> None:
+    """``/api/v`` не должен срезать часть сегмента ``/api/v1``."""
+    project = _gateway_project(tmp_path / "p", "openapi30.yaml", "spec.yaml", strip_prefix="/api/v")
+
+    with pytest.raises(ManifestBindingError):
+        project.build()
+
+
+def test_strip_prefix_mismatch_ignores_unselected_operations(tmp_path: Path) -> None:
+    """Не выбранные операции вне префикса генерацию не ломают."""
+    ok = {"200": {"description": "ok"}}
+    document = {
+        "openapi": "3.0.3",
+        "info": {"title": "t", "version": "1"},
+        "paths": {
+            "/svc/ping": {"get": {"operationId": "ping", "responses": ok}},
+            "/other/pong": {"get": {"operationId": "pong", "responses": ok}},
+        },
+    }
+    project = make_project(tmp_path / "p")
+    project.write("api/spec.yaml", yaml.safe_dump(document))
+    project.write_manifest(
+        sources={"main": {"path": "api/spec.yaml", "strip_prefix": "/svc", "base_path": "/gw"}},
+        operations={"api.ping": {"source": "main", "operation_id": "ping"}},
+    )
+
+    assert project.build().operations[0].contract.path == "/gw/ping"
+
+
+def test_list_and_add_use_the_final_route(tmp_path: Path) -> None:
+    project = _gateway_project(
+        tmp_path / "p", "openapi30.yaml", "spec.yaml", strip_prefix="/api/v1", base_path="/gw"
+    )
+
+    listing = project.cli("list", "--json")
+    assert listing.returncode == 0, listing.stderr
+    paths = {op["path"] for op in json.loads(listing.stdout)["sources"][0]["operations"]}
+    assert "/gw/workspaces/{workspaceId}/documents" in paths
+
+    added = project.cli(
+        "add", "api.createDocument", "--source", "main", "--operation-id", "createDocument"
+    )
+    assert added.returncode == 0, added.stderr
+    assert "/gw/workspaces/{workspaceId}/documents" in project.manifest_path.read_text(
+        encoding="utf-8"
+    )

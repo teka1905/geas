@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Protocol
 
 from ..errors import SpecLoadError, UnsupportedSpecVersionError
@@ -23,6 +24,7 @@ __all__ = [
     "Dialect",
     "detect_dialect",
     "merge_parameters",
+    "source_operations",
 ]
 
 #: Методы, которые считаются операциями. ``trace`` есть только в OpenAPI 3.
@@ -124,3 +126,39 @@ def detect_dialect(document: Any, *, source: str) -> Dialect:
 
 #: Порядок важен только для документации: детект идёт по явным ключам версии.
 DIALECTS: tuple[str, ...] = ("swagger2", "openapi30")
+
+
+def source_operations(
+    dialect: Dialect,
+    registry: SpecRegistry,
+    *,
+    base_path: str | None,
+    strip_prefix: str | None,
+) -> tuple[RawOperation, ...]:
+    """Операции источника с итоговыми маршрутами клиента.
+
+    Без ``strip_prefix`` — как есть. С ним маршрут, который описывает спецификация
+    (для Swagger 2.0 это ``basePath`` + путь), теряет ``strip_prefix`` и получает
+    ``base_path`` (по умолчанию пустой). Операция, чей маршрут не начинается с
+    ``strip_prefix``, не угадывается: она получает ``route_error`` и остаётся с
+    исходным путём, а ошибка поднимается, только если операцию выбрали.
+    """
+    if strip_prefix is None:
+        return dialect.operations(registry, base_path=base_path)
+    strip = strip_prefix.rstrip("/")
+    prefix = (base_path or "").rstrip("/")
+    result: list[RawOperation] = []
+    for raw in dialect.operations(registry, base_path=None):
+        if raw.path == strip or raw.path.startswith(f"{strip}/"):
+            result.append(replace(raw, path=f"{prefix}{raw.path[len(strip) :]}" or "/"))
+        else:
+            result.append(
+                replace(
+                    raw,
+                    route_error=(
+                        f"маршрут {raw.path!r} не начинается со снимаемого префикса "
+                        f"{strip_prefix!r} (sources.<имя>.strip_prefix)"
+                    ),
+                )
+            )
+    return tuple(result)

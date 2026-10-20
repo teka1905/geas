@@ -297,6 +297,14 @@ def test_unknown_key_is_rejected_at_every_level(data: dict[str, Any], where: str
             "sources.main.root: ожидалась строка",
         ),
         (
+            document(sources={"main": {"path": "a.yaml", "strip_prefix": 1}}),
+            "sources.main.strip_prefix: ожидалась строка",
+        ),
+        (
+            document(sources={"main": {"path": "a.yaml", "strip_prefix": "api"}}),
+            "sources.main.strip_prefix: ожидался маршрут",
+        ),
+        (
             document(sources={"main": {"path": "a.yaml", "base_path": ["/api"]}}),
             "sources.main.base_path: ожидалась строка",
         ),
@@ -667,7 +675,14 @@ def test_duplicate_operation_key_is_rejected() -> None:
 def test_to_dict_round_trips() -> None:
     data = document(
         policies={"waiver_max_days": 30, "unknown_formats": "annotate"},
-        sources={"main": {"path": "api/openapi.yaml", "root": "api", "base_path": "/api/v1"}},
+        sources={
+            "main": {
+                "path": "api/openapi.yaml",
+                "root": "api",
+                "base_path": "/api/v1",
+                "strip_prefix": "/api",
+            }
+        },
         operations=operations(
             **{
                 "api.createDocument": {

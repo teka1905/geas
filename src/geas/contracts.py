@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .dialects.base import Dialect, detect_dialect
+from .dialects.base import Dialect, detect_dialect, source_operations
 from .errors import (
     ManifestBindingError,
     ManifestError,
@@ -123,7 +123,12 @@ def build_contracts(manifest: Manifest, waivers: WaiverSet) -> BuildResult:
         )
         document = registry.entry_document()
         dialect = detect_dialect(document, source=source.name)
-        raw_operations = dialect.operations(registry, base_path=source.base_path)
+        raw_operations = source_operations(
+            dialect,
+            registry,
+            base_path=source.base_path,
+            strip_prefix=source.strip_prefix,
+        )
         for key, spec, raw in _select(manifest, source.name, source.selection, raw_operations):
             if key in keys:
                 raise ManifestError(f"ключ операции {key!r} встречается дважды")
@@ -261,6 +266,8 @@ def _select_all(
             )
         seen[raw.operation_id] = raw
         key = f"{source_name}.{raw.operation_id}"
+        if raw.route_error:
+            raise ManifestBindingError(raw.route_error, source=source_name, operation_key=key)
         spec = manifest.operation(key)
         if spec is not None and spec.source != source_name:
             raise ManifestError(
@@ -275,6 +282,8 @@ def _select_all(
 
 def _check_binding(spec: OperationSpec, raw: RawOperation, source_name: str) -> None:
     """Проверить, что закреплённая в manifest привязка всё ещё верна."""
+    if raw.route_error:
+        raise ManifestBindingError(raw.route_error, source=source_name, operation_key=spec.key)
     if spec.operation_id and raw.operation_id != spec.operation_id:
         raise ManifestBindingError(
             f"operationId изменился: в manifest {spec.operation_id!r}, "

@@ -329,6 +329,7 @@ JSON Schema отсечённых определений встраивается
 | --- | --- |
 | `basePath` (2.0) | входит в маршрут; можно переопределить через `sources.<name>.base_path` |
 | `servers` (3.0) | в маршрут не входит; префикс задаётся через `sources.<name>.base_path` |
+| Шлюз с другим префиксом | `sources.<name>.strip_prefix` снимает префикс спецификации, `base_path` добавляет префикс шлюза |
 | `info` без `title`/`version` | принимается |
 | `operationId` отсутствует | в режиме `all` — ошибка; в `explicit` операция связывается по `method` + `path` |
 | `operationId` повторяется | в режиме `all` — ошибка; в `explicit` операция выбирается по `method` + `path` из manifest, без них — ошибка |

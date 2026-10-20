@@ -42,7 +42,7 @@ from .artifacts import (
     write_artifacts,
 )
 from .contracts import build_contracts
-from .dialects.base import detect_dialect
+from .dialects.base import detect_dialect, source_operations
 from .errors import (
     ArtifactError,
     ContractError,
@@ -245,6 +245,8 @@ def _cmd_list(args: argparse.Namespace) -> int:
             key = operation["key"] or "-"
             print(f"  {mark} {operation['method']:<7} {operation['path']}")
             print(f"      operationId={operation['operation_id'] or '-'}  ключ={key}")
+            if operation["route_error"]:
+                print(f"      ! {operation['route_error']}")
             if operation["request_content_types"]:
                 print(f"      request: {', '.join(operation['request_content_types'])}")
             if operation["responses"]:
@@ -269,7 +271,12 @@ def _inspect(manifest: Manifest, *, only: str | None = None) -> dict[str, Any]:
         dialect = detect_dialect(registry.entry_document(), source=source.name)
         operations: list[dict[str, Any]] = []
         bindings = [spec for spec in manifest.operations if spec.source == source.name]
-        for raw in dialect.operations(registry, base_path=source.base_path):
+        for raw in source_operations(
+            dialect,
+            registry,
+            base_path=source.base_path,
+            strip_prefix=source.strip_prefix,
+        ):
             key: str | None = None
             if source.selection is Selection.ALL:
                 if raw.operation_id:
@@ -301,6 +308,7 @@ def _inspect(manifest: Manifest, *, only: str | None = None) -> dict[str, Any]:
                         if not item.unsupported_reason
                     ),
                     "unsupported": unsupported,
+                    "route_error": raw.route_error,
                 }
             )
         sources.append(
@@ -434,6 +442,8 @@ def _complete_add_entry(
         raise _UsageError(f"операция выбрана неоднозначно ({routes}); передайте --method и --path")
 
     operation = candidates[0]
+    if operation["route_error"]:
+        raise _UsageError(operation["route_error"])
     completed = dict(entry)
     if operation["operation_id"]:
         completed["operation_id"] = operation["operation_id"]
