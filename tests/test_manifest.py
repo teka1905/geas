@@ -302,11 +302,19 @@ def test_unknown_key_is_rejected_at_every_level(data: dict[str, Any], where: str
         ),
         (
             document(sources={"main": {"path": "a.yaml", "strip_prefix": "api"}}),
-            "sources.main.strip_prefix: ожидался маршрут",
+            "sources.main.strip_prefix: префикс должен начинаться с '/'",
+        ),
+        (
+            document(sources={"main": {"path": "a.yaml", "strip_prefix": "/"}}),
+            "sources.main.strip_prefix: снимать корень '/' бессмысленно",
         ),
         (
             document(sources={"main": {"path": "a.yaml", "base_path": ["/api"]}}),
             "sources.main.base_path: ожидалась строка",
+        ),
+        (
+            document(sources={"main": {"path": "a.yaml", "base_path": "api/v1"}}),
+            "sources.main.base_path: префикс должен начинаться с '/'",
         ),
         (
             document(operations=operations(**{"api.x": {"method": 123}})),

@@ -34,7 +34,7 @@ from .errors import (
     UnsupportedConstructError,
 )
 from .jsonschema_gen import to_json_schema
-from .manifest import Manifest, NonWaivableRule, OperationSpec, Selection
+from .manifest import Manifest, NonWaivableRule, OperationSpec, Selection, SourceSpec
 from .models import (
     ArrayNode,
     BodyContract,
@@ -72,6 +72,7 @@ __all__ = [
     "BuiltOperation",
     "build_contracts",
     "resolve_contract_path",
+    "route_hint",
 ]
 
 
@@ -126,6 +127,7 @@ def build_contracts(manifest: Manifest, waivers: WaiverSet) -> BuildResult:
         raw_operations = source_operations(
             dialect,
             registry,
+            source=source.name,
             base_path=source.base_path,
             strip_prefix=source.strip_prefix,
         )
@@ -175,8 +177,13 @@ def _select_explicit(
     for raw in raw_operations:
         if raw.operation_id:
             by_operation_id.setdefault(raw.operation_id, []).append(raw)
-        by_route[(raw.method, raw.path)] = raw
+        # Операция вне ``strip_prefix`` сохраняет исходный путь, и он может совпасть
+        # с итоговым маршрутом другой операции. Маршрут принадлежит той, что отображена.
+        route = (raw.method, raw.path)
+        if not raw.route_error or route not in by_route:
+            by_route[route] = raw
 
+    hint = route_hint(manifest.source(source_name))
     selected: list[tuple[str, OperationSpec | None, RawOperation]] = []
     for spec in manifest.operations:
         if spec.source != source_name:
@@ -190,10 +197,12 @@ def _select_explicit(
                     operation_key=spec.key,
                 )
             if len(candidates) > 1:
-                raw = _pick_by_route(spec, candidates, source_name)
+                raw = _pick_by_route(spec, candidates, source_name, hint=hint)
             else:
                 raw = candidates[0]
-                if spec.method and spec.path:
+                # У операции с ``route_error`` маршрута нет: подмена по маршруту
+                # заслонила бы её причину чужим «operationId изменился».
+                if spec.method and spec.path and not raw.route_error:
                     exact = by_route.get((spec.method, spec.path))
                     if exact is not None:
                         raw = exact
@@ -201,7 +210,7 @@ def _select_explicit(
             found = by_route.get((spec.method, spec.path))
             if found is None:
                 raise ManifestBindingError(
-                    f"в источнике нет операции {spec.method} {spec.path}",
+                    f"в источнике нет операции {spec.method} {spec.path}{hint}",
                     source=source_name,
                     operation_key=spec.key,
                 )
@@ -211,13 +220,23 @@ def _select_explicit(
                 f"operations.{spec.key}: укажите operation_id либо пару method+path — "
                 f"иначе операцию невозможно связать со спецификацией"
             )
-        _check_binding(spec, raw, source_name)
+        _check_binding(spec, raw, source_name, hint=hint)
         selected.append((spec.key, spec, raw))
     return selected
 
 
+def route_hint(source: SourceSpec) -> str:
+    """Подсказка для промаха по маршруту: с ``strip_prefix`` manifest хранит итоговый путь."""
+    if source.strip_prefix is None:
+        return ""
+    return (
+        f"; маршруты источника отображены sources.{source.name}.strip_prefix="
+        f"{source.strip_prefix!r} — укажите итоговый маршрут, его печатает 'geas list'"
+    )
+
+
 def _pick_by_route(
-    spec: OperationSpec, candidates: list[RawOperation], source_name: str
+    spec: OperationSpec, candidates: list[RawOperation], source_name: str, *, hint: str
 ) -> RawOperation:
     """Выбрать одну из операций с общим ``operationId`` по закреплённому маршруту.
 
@@ -233,12 +252,13 @@ def _pick_by_route(
             source=source_name,
             operation_key=spec.key,
         )
-    for candidate in candidates:
-        if (candidate.method, candidate.path) == (spec.method, spec.path):
-            return candidate
+    matching = [c for c in candidates if (c.method, c.path) == (spec.method, spec.path)]
+    if matching:
+        # Как и в ``by_route``: маршрут принадлежит операции, отображённой ``strip_prefix``.
+        return next((c for c in matching if not c.route_error), matching[0])
     raise ManifestBindingError(
         f"operationId={spec.operation_id!r} встречается несколько раз ({routes}), "
-        f"и среди этих операций нет {spec.method} {spec.path}, закреплённой в manifest",
+        f"и среди этих операций нет {spec.method} {spec.path}, закреплённой в manifest{hint}",
         source=source_name,
         operation_key=spec.key,
     )
@@ -247,6 +267,7 @@ def _pick_by_route(
 def _select_all(
     manifest: Manifest, source_name: str, raw_operations: tuple[RawOperation, ...]
 ) -> list[tuple[str, OperationSpec | None, RawOperation]]:
+    hint = route_hint(manifest.source(source_name))
     seen: dict[str, RawOperation] = {}
     selected: list[tuple[str, OperationSpec | None, RawOperation]] = []
     for raw in raw_operations:
@@ -275,13 +296,17 @@ def _select_all(
                 f"{source_name!r}, из которого пришла операция"
             )
         if spec is not None:
-            _check_binding(spec, raw, source_name)
+            _check_binding(spec, raw, source_name, hint=hint)
         selected.append((key, spec, raw))
     return selected
 
 
-def _check_binding(spec: OperationSpec, raw: RawOperation, source_name: str) -> None:
-    """Проверить, что закреплённая в manifest привязка всё ещё верна."""
+def _check_binding(spec: OperationSpec, raw: RawOperation, source_name: str, *, hint: str) -> None:
+    """Проверить, что закреплённая в manifest привязка всё ещё верна.
+
+    ``hint`` дописывается к расхождению маршрута: после включения ``strip_prefix``
+    manifest часто ещё хранит исходный путь.
+    """
     if raw.route_error:
         raise ManifestBindingError(raw.route_error, source=source_name, operation_key=spec.key)
     if spec.operation_id and raw.operation_id != spec.operation_id:
@@ -299,7 +324,7 @@ def _check_binding(spec: OperationSpec, raw: RawOperation, source_name: str) -> 
         )
     if spec.path and raw.path != spec.path:
         raise ManifestBindingError(
-            f"маршрут изменился: в manifest {spec.path!r}, в спецификации {raw.path!r}",
+            f"маршрут изменился: в manifest {spec.path!r}, в спецификации {raw.path!r}{hint}",
             source=source_name,
             operation_key=spec.key,
         )

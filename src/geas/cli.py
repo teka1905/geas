@@ -41,7 +41,7 @@ from .artifacts import (
     render_artifacts,
     write_artifacts,
 )
-from .contracts import build_contracts
+from .contracts import build_contracts, route_hint
 from .dialects.base import detect_dialect, source_operations
 from .errors import (
     ArtifactError,
@@ -255,6 +255,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
                 print(f"      не поддержано: {reason}")
     print()
     print("* — операция выбрана manifest и попадает в generated-артефакты")
+    if any(op["route_error"] for source in report["sources"] for op in source["operations"]):
+        print(
+            "! — маршрут не отображён strip_prefix; если такая операция выбрана, генерация падает"
+        )
     return EXIT_OK
 
 
@@ -271,18 +275,21 @@ def _inspect(manifest: Manifest, *, only: str | None = None) -> dict[str, Any]:
         dialect = detect_dialect(registry.entry_document(), source=source.name)
         operations: list[dict[str, Any]] = []
         bindings = [spec for spec in manifest.operations if spec.source == source.name]
-        for raw in source_operations(
+        raw_operations = source_operations(
             dialect,
             registry,
+            source=source.name,
             base_path=source.base_path,
             strip_prefix=source.strip_prefix,
-        ):
+        )
+        routed = {(raw.method, raw.path) for raw in raw_operations if not raw.route_error}
+        for raw in raw_operations:
             key: str | None = None
             if source.selection is Selection.ALL:
                 if raw.operation_id:
                     key = f"{source.name}.{raw.operation_id}"
             else:
-                key = _explicit_key(bindings, raw)
+                key = _explicit_key(bindings, raw, routed=routed)
             unsupported = [
                 f"request {body.content_type}: {body.unsupported_reason}"
                 for body in raw.bodies
@@ -323,16 +330,21 @@ def _inspect(manifest: Manifest, *, only: str | None = None) -> dict[str, Any]:
     return {"manifest_version": MANIFEST_VERSION, "sources": sources}
 
 
-def _explicit_key(bindings: Sequence[OperationSpec], raw: RawOperation) -> str | None:
+def _explicit_key(
+    bindings: Sequence[OperationSpec], raw: RawOperation, *, routed: set[tuple[str, str]]
+) -> str | None:
     """Ключ, под которым explicit-источник выбирает операцию, или ``None``.
 
     Правило то же, что у привязки: закреплённый маршрут сильнее ``operationId``.
     Один ``operationId`` бывает у нескольких ручек, а у операции без
-    ``operationId`` другого адреса, кроме маршрута, нет.
+    ``operationId`` другого адреса, кроме маршрута, нет. ``routed`` — маршруты
+    операций без ``route_error``: такой маршрут принадлежит им, а не операции вне
+    ``strip_prefix`` с совпавшим исходным путём.
     """
+    route = (raw.method, raw.path)
     for spec in bindings:
         if spec.method and spec.path:
-            if (spec.method, spec.path) == (raw.method, raw.path):
+            if (spec.method, spec.path) == route and not (raw.route_error and route in routed):
                 return spec.key
         elif spec.operation_id and spec.operation_id == raw.operation_id:
             return spec.key
@@ -434,16 +446,26 @@ def _complete_add_entry(
         and (not args.path or operation["path"] == args.path)
     ]
     if not candidates:
-        raise _UsageError(
-            f"в источнике {args.source!r} нет операции с переданным operationId/method/path"
+        # Подсказка нужна, только если не нашёлся сам маршрут, а не operationId.
+        route_missing = args.path and not any(
+            operation["path"] == args.path
+            and (not args.method or operation["method"] == args.method.upper())
+            for operation in operations
         )
-    if len(candidates) > 1:
-        routes = ", ".join(f"{item['method']} {item['path']}" for item in candidates)
+        hint = route_hint(manifest.source(args.source)) if route_missing else ""
+        raise _UsageError(
+            f"в источнике {args.source!r} нет операции с переданным operationId/method/path{hint}"
+        )
+    # Операцию с ``route_error`` выбрать нельзя: среди подходящих она не кандидат,
+    # а если других нет, её причина понятнее, чем «выбрано неоднозначно».
+    routable = [operation for operation in candidates if not operation["route_error"]]
+    if not routable:
+        raise _UsageError(candidates[0]["route_error"])
+    if len(routable) > 1:
+        routes = ", ".join(f"{item['method']} {item['path']}" for item in routable)
         raise _UsageError(f"операция выбрана неоднозначно ({routes}); передайте --method и --path")
 
-    operation = candidates[0]
-    if operation["route_error"]:
-        raise _UsageError(operation["route_error"])
+    operation = routable[0]
     completed = dict(entry)
     if operation["operation_id"]:
         completed["operation_id"] = operation["operation_id"]

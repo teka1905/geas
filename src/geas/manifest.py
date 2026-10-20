@@ -200,16 +200,27 @@ class SourceSpec:
         if root is not None and not isinstance(root, str):
             raise ManifestError(f"{where}.root: ожидалась строка")
         base_path = data.get("base_path")
-        if base_path is not None and not isinstance(base_path, str):
-            raise ManifestError(f"{where}.base_path: ожидалась строка")
+        if base_path is not None:
+            if not isinstance(base_path, str):
+                raise ManifestError(f"{where}.base_path: ожидалась строка")
+            # Пустая строка допустима: она убирает префикс, который диктует документ.
+            if base_path and not base_path.startswith("/"):
+                raise ManifestError(
+                    f"{where}.base_path: префикс должен начинаться с '/', получено {base_path!r}"
+                )
         strip_prefix = data.get("strip_prefix")
         if strip_prefix is not None:
             if not isinstance(strip_prefix, str):
                 raise ManifestError(f"{where}.strip_prefix: ожидалась строка")
-            if not strip_prefix.rstrip("/").startswith("/"):
+            if not strip_prefix.startswith("/"):
                 raise ManifestError(
-                    f"{where}.strip_prefix: ожидался маршрут вида '/api/v1', получено "
+                    f"{where}.strip_prefix: префикс должен начинаться с '/', получено "
                     f"{strip_prefix!r}"
+                )
+            if not strip_prefix.rstrip("/"):
+                raise ManifestError(
+                    f"{where}.strip_prefix: снимать корень '/' бессмысленно — "
+                    f"укажите префикс вида '/api/v1' или уберите настройку"
                 )
         return cls(
             name=name,

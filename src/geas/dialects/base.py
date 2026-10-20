@@ -132,6 +132,7 @@ def source_operations(
     dialect: Dialect,
     registry: SpecRegistry,
     *,
+    source: str,
     base_path: str | None,
     strip_prefix: str | None,
 ) -> tuple[RawOperation, ...]:
@@ -139,26 +140,43 @@ def source_operations(
 
     Без ``strip_prefix`` — как есть. С ним маршрут, который описывает спецификация
     (для Swagger 2.0 это ``basePath`` + путь), теряет ``strip_prefix`` и получает
-    ``base_path`` (по умолчанию пустой). Операция, чей маршрут не начинается с
-    ``strip_prefix``, не угадывается: она получает ``route_error`` и остаётся с
-    исходным путём, а ошибка поднимается, только если операцию выбрали.
+    ``base_path`` (по умолчанию пустой). Маршрут не угадывается: операция вне
+    ``strip_prefix`` остаётся с исходным путём, а операции, чьи разные маршруты
+    свелись к одному итоговому, — с итоговым. Обе получают ``route_error``, и ошибка
+    поднимается, только если такую операцию выбрали.
     """
     if strip_prefix is None:
         return dialect.operations(registry, base_path=base_path)
     strip = strip_prefix.rstrip("/")
     prefix = (base_path or "").rstrip("/")
+    setting = f"sources.{source}.strip_prefix"
     result: list[RawOperation] = []
+    originals: dict[tuple[str, str], list[str]] = {}
     for raw in dialect.operations(registry, base_path=None):
         if raw.path == strip or raw.path.startswith(f"{strip}/"):
-            result.append(replace(raw, path=f"{prefix}{raw.path[len(strip) :]}" or "/"))
+            final = f"{prefix}{raw.path[len(strip) :]}" or "/"
+            originals.setdefault((raw.method, final), []).append(raw.path)
+            result.append(replace(raw, path=final))
         else:
             result.append(
                 replace(
                     raw,
                     route_error=(
                         f"маршрут {raw.path!r} не начинается со снимаемого префикса "
-                        f"{strip_prefix!r} (sources.<имя>.strip_prefix)"
+                        f"{strip_prefix!r} ({setting})"
                     ),
                 )
             )
-    return tuple(result)
+    collapsed = {route: paths for route, paths in originals.items() if len(paths) > 1}
+    return tuple(
+        replace(
+            raw,
+            route_error=(
+                f"после снятия {setting}={strip_prefix!r} маршруты "
+                f"{collapsed[(raw.method, raw.path)]} совпадают: {raw.method} {raw.path}"
+            ),
+        )
+        if not raw.route_error and (raw.method, raw.path) in collapsed
+        else raw
+        for raw in result
+    )
