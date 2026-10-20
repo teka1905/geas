@@ -1,0 +1,319 @@
+"""Слэш на конце маршрута: явная настройка ``accept_trailing_slash``.
+
+По умолчанию маршрут сопоставляется строго. Настройка источника или операции
+разрешает ровно один необязательный завершающий слэш, не трогая остальные
+маршруты. Проверяются все три места, где маршрут сопоставляется: разбор
+перехваченного запроса, JJ-матчер ``ContractMock`` и drift-guard manifest.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import aiohttp
+import pytest
+
+from geas.errors import ManifestError, RequestContractError
+from geas.manifest import Manifest, OperationSpec, SourceSpec
+from geas.runtime.operation import extract_path_params, route_variants
+from jj_server import JJServer, jj_server  # noqa: F401 - сессионная фикстура
+from support import Project, make_project
+
+SPEC = """\
+openapi: "3.0.3"
+
+info:
+  title: Slash API
+  version: "1.0.0"
+
+paths:
+  /search/tree:
+    post:
+      operationId: loadTree
+      responses:
+        "204":
+          description: Готово
+  /items/{itemId}:
+    get:
+      operationId: getItem
+      parameters:
+        - name: itemId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Готово
+  /declared/:
+    post:
+      operationId: declared
+      responses:
+        "204":
+          description: Готово
+  /strict:
+    get:
+      operationId: strictRoute
+      responses:
+        "204":
+          description: Готово
+  /overridden:
+    get:
+      operationId: overridden
+      responses:
+        "204":
+          description: Готово
+"""
+
+
+def build_project(root: Path, *, package: str) -> Project:
+    project = make_project(root, package=package)
+    project.write_spec("api/lax.yaml", SPEC)
+    project.write_spec("api/strict.yaml", SPEC)
+    project.write_manifest(
+        sources={
+            "lax": {
+                "path": "api/lax.yaml",
+                "selection": "all",
+                "root": "api",
+                "accept_trailing_slash": True,
+            },
+            "strict": {"path": "api/strict.yaml", "selection": "all", "root": "api"},
+        },
+        operations={
+            "lax.loadTree": {"source": "lax", "operation_id": "loadTree", "d42": False},
+            "lax.strictRoute": {
+                "source": "lax",
+                "operation_id": "strictRoute",
+                "accept_trailing_slash": False,
+            },
+            "strict.overridden": {
+                "source": "strict",
+                "operation_id": "overridden",
+                "accept_trailing_slash": True,
+            },
+        },
+    )
+    project.update()
+    return project
+
+
+@pytest.fixture(scope="module")
+def project(tmp_path_factory: pytest.TempPathFactory) -> Project:
+    return build_project(tmp_path_factory.mktemp("slash"), package="slash_contracts")
+
+
+@pytest.fixture(scope="module")
+def operations(project: Project) -> Iterator[Any]:
+    with project.importable() as module:
+        yield module.operations
+
+
+def recorded(path: str, **overrides: Any) -> dict[str, Any]:
+    request: dict[str, Any] = {
+        "method": "POST",
+        "path": path,
+        "segments": {},
+        "params": [],
+        "headers": [],
+        "body": None,
+        "index": 0,
+    }
+    request.update(overrides)
+    return request
+
+
+# ------------------------------------------------------------------ manifest
+
+
+def test_default_is_strict() -> None:
+    assert SourceSpec.from_dict("main", {"path": "a.yaml"}).accept_trailing_slash is False
+    assert OperationSpec.from_dict("a.b", {"source": "main"}).accept_trailing_slash is None
+
+
+@pytest.mark.parametrize("value", ["yes", 1, None])
+def test_source_setting_must_be_boolean(value: Any) -> None:
+    with pytest.raises(ManifestError, match="accept_trailing_slash"):
+        SourceSpec.from_dict("main", {"path": "a.yaml", "accept_trailing_slash": value})
+
+
+def test_operation_setting_must_be_boolean() -> None:
+    with pytest.raises(ManifestError, match="accept_trailing_slash"):
+        OperationSpec.from_dict("a.b", {"source": "main", "accept_trailing_slash": "yes"})
+
+
+def test_manifest_round_trips_the_setting(project: Project) -> None:
+    manifest = project.load()
+    restored = Manifest.from_dict(manifest.to_dict(), base_dir=manifest.base_dir)
+
+    assert restored.source("lax").accept_trailing_slash is True
+    assert restored.source("strict").accept_trailing_slash is False
+    assert restored.operation("lax.strictRoute").accept_trailing_slash is False
+    assert restored.operation("lax.loadTree").accept_trailing_slash is None
+
+
+# ------------------------------------------------------------ extract / route
+
+
+def test_route_variants() -> None:
+    assert route_variants("/a/b") == ("/a/b", "/a/b/")
+    assert route_variants("/a/b/") == ("/a/b/", "/a/b")
+    assert route_variants("/") == ("/",)
+
+
+def test_extract_path_params_is_strict_by_default() -> None:
+    assert extract_path_params("/a/{id}", "/a/1/") is None
+
+
+def test_extract_path_params_accepts_one_slash_only() -> None:
+    template = "/a/{id}"
+    assert extract_path_params(template, "/a/1", accept_trailing_slash=True) == {"id": "1"}
+    assert extract_path_params(template, "/a/1/", accept_trailing_slash=True) == {"id": "1"}
+    assert extract_path_params(template, "/a/1//", accept_trailing_slash=True) is None
+    assert extract_path_params(template, "/a//", accept_trailing_slash=True) is None
+    assert extract_path_params("/a/", "/a", accept_trailing_slash=True) == {}
+    assert extract_path_params("/", "", accept_trailing_slash=True) is None
+
+
+# ----------------------------------------------------------------- артефакты
+
+
+def test_setting_is_resolved_per_operation(project: Project, operations: Any) -> None:
+    assert operations.lax.load_tree.accept_trailing_slash is True
+    assert operations.lax.get_item.accept_trailing_slash is True
+    assert operations.lax.strict_route.accept_trailing_slash is False
+    assert operations.strict.load_tree.accept_trailing_slash is False
+    assert operations.strict.overridden.accept_trailing_slash is True
+
+
+def test_contract_keeps_the_route_of_the_spec(project: Project, operations: Any) -> None:
+    """Drift-guard и manifest видят путь из спецификации, настройка его не меняет."""
+    assert operations.lax.load_tree.path == "/search/tree"
+    assert operations.lax.declared.path == "/declared/"
+    document = project.contract_document("lax__load_tree")
+    assert document["path"] == "/search/tree"
+    assert document["accept_trailing_slash"] is True
+
+
+def test_strict_artifacts_do_not_change(project: Project) -> None:
+    """Без настройки в документе нет нового ключа: прежние артефакты не меняются."""
+    assert "accept_trailing_slash" not in project.contract_document("strict__load_tree")
+
+
+def test_manifest_may_pin_the_spec_route(tmp_path: Path) -> None:
+    """Закрепление ``path`` в manifest работает вместе с настройкой."""
+    project = make_project(tmp_path, package="pinned_contracts")
+    project.write_spec("api/openapi.yaml", SPEC)
+    project.write_manifest(
+        sources={
+            "main": {"path": "api/openapi.yaml", "root": "api", "accept_trailing_slash": True}
+        },
+        operations={
+            "main.loadTree": {
+                "source": "main",
+                "operation_id": "loadTree",
+                "method": "POST",
+                "path": "/search/tree",
+            }
+        },
+    )
+    project.update()
+    assert project.check().is_clean
+
+
+def test_changing_the_setting_is_artifact_drift(tmp_path: Path) -> None:
+    project = build_project(tmp_path, package="drift_contracts")
+    document = project._manifest_document
+    document["sources"]["lax"]["accept_trailing_slash"] = False
+    project.write_manifest(sources=document["sources"], operations=document["operations"])
+    assert not project.check().is_clean
+
+
+# ----------------------------------------------- validate_recorded_request
+
+
+@pytest.mark.parametrize("path", ["/search/tree", "/search/tree/"])
+def test_recorded_request_accepts_both_forms(operations: Any, path: str) -> None:
+    operations.lax.load_tree.validate_recorded_request(**recorded(path))
+
+
+def test_recorded_request_rejects_double_slash(operations: Any) -> None:
+    with pytest.raises(RequestContractError) as info:
+        operations.lax.load_tree.validate_recorded_request(**recorded("/search/tree//"))
+    assert info.value.json_pointer == "/path"
+
+
+def test_strict_operation_rejects_slash(operations: Any) -> None:
+    with pytest.raises(RequestContractError):
+        operations.strict.load_tree.validate_recorded_request(**recorded("/search/tree/"))
+    with pytest.raises(RequestContractError):
+        operations.lax.strict_route.validate_recorded_request(**recorded("/strict/", method="GET"))
+
+
+@pytest.mark.parametrize("path", ["/items/7", "/items/7/"])
+def test_path_params_are_parsed_the_same(operations: Any, path: str) -> None:
+    operations.lax.get_item.validate_recorded_request(**recorded(path, method="GET"))
+
+
+def test_path_param_schema_still_applies(operations: Any) -> None:
+    with pytest.raises(RequestContractError, match="itemId"):
+        operations.lax.get_item.validate_recorded_request(**recorded("/items/x/", method="GET"))
+
+
+@pytest.mark.parametrize("path", ["/declared/", "/declared"])
+def test_spec_slash_accepts_the_form_without_it(operations: Any, path: str) -> None:
+    operations.lax.declared.validate_recorded_request(**recorded(path))
+
+
+# ---------------------------------------------------------------- ContractMock
+
+
+async def call(server: JJServer, method: str, path: str) -> int:
+    async with (
+        aiohttp.ClientSession() as session,
+        session.request(method, f"{server.url}{path}") as response,
+    ):
+        return response.status
+
+
+@pytest.mark.parametrize("path", ["/search/tree", "/search/tree/"])
+async def test_mock_intercepts_both_forms(
+    jj_server: JJServer,  # noqa: F811 - фикстура
+    operations: Any,
+    path: str,
+) -> None:
+    async with operations.lax.load_tree.mock(status=204, wait_for_requests=1) as mock:
+        assert await call(jj_server, "POST", path) == 204
+
+    assert [item.path for item in mock.requests] == [path]
+
+
+async def test_mock_with_path_param_intercepts_both_forms(
+    jj_server: JJServer,  # noqa: F811 - фикстура
+    operations: Any,
+) -> None:
+    for path in ("/items/5", "/items/5/"):
+        async with operations.lax.get_item.mock(
+            status=204, path_params={"itemId": 5}, wait_for_requests=1
+        ) as mock:
+            assert await call(jj_server, "GET", path) == 204
+        assert [item.path for item in mock.requests] == [path]
+
+
+async def test_mock_does_not_intercept_other_routes(
+    jj_server: JJServer,  # noqa: F811 - фикстура
+    operations: Any,
+) -> None:
+    async with operations.lax.load_tree.mock(status=204):
+        assert await call(jj_server, "POST", "/search/tree//") == 404
+        assert await call(jj_server, "POST", "/search/tre/") == 404
+
+
+async def test_strict_mock_does_not_intercept_slash(
+    jj_server: JJServer,  # noqa: F811 - фикстура
+    operations: Any,
+) -> None:
+    async with operations.strict.load_tree.mock(status=204):
+        assert await call(jj_server, "POST", "/search/tree/") == 404

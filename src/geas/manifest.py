@@ -178,12 +178,17 @@ class SourceSpec:
     #: Префикс маршрута. ``None`` — взять тот, что диктует сам документ
     #: (``basePath`` в Swagger 2.0, пустая строка в OpenAPI 3.0).
     base_path: str | None = None
+    #: Принимает ли сервер маршруты операций источника и со слэшем на конце, и без
+    #: него. Умолчание строгое; операция может переопределить значение.
+    accept_trailing_slash: bool = False
 
     @classmethod
     def from_dict(cls, name: str, data: Any) -> SourceSpec:
         where = f"sources.{name}"
         data = _require_mapping(data, where)
-        _reject_unknown(data, {"path", "root", "selection", "base_path"}, where)
+        _reject_unknown(
+            data, {"path", "root", "selection", "base_path", "accept_trailing_slash"}, where
+        )
         python_identifier(to_snake_case(name), context=f"имя источника {name!r}")
         raw_selection = data.get("selection", Selection.EXPLICIT.value)
         try:
@@ -199,12 +204,16 @@ class SourceSpec:
         base_path = data.get("base_path")
         if base_path is not None and not isinstance(base_path, str):
             raise ManifestError(f"{where}.base_path: ожидалась строка")
+        accept_slash = data.get("accept_trailing_slash", False)
+        if not isinstance(accept_slash, bool):
+            raise ManifestError(f"{where}.accept_trailing_slash: ожидалось булево значение")
         return cls(
             name=name,
             path=_require_str(data, "path", where),
             root=root,
             selection=selection,
             base_path=base_path,
+            accept_trailing_slash=accept_slash,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -213,6 +222,8 @@ class SourceSpec:
             data["root"] = self.root
         if self.base_path is not None:
             data["base_path"] = self.base_path
+        if self.accept_trailing_slash:
+            data["accept_trailing_slash"] = True
         return data
 
 
@@ -313,6 +324,8 @@ class OperationSpec:
     #: Генерировать ли для операции d42-схемы. Отключается явно, когда d42 для
     #: операции не нужен; рекурсия отключения не требует — цикл отсекается.
     d42: bool = True
+    #: Принимать ли маршрут и со слэшем на конце. ``None`` — взять значение источника.
+    accept_trailing_slash: bool | None = None
 
     @classmethod
     def from_dict(cls, key: str, data: Any) -> OperationSpec:
@@ -330,6 +343,7 @@ class OperationSpec:
                 "python_path",
                 "non_waivable",
                 "d42",
+                "accept_trailing_slash",
             },
             where,
         )
@@ -378,6 +392,10 @@ class OperationSpec:
         if not isinstance(d42_enabled, bool):
             raise ManifestError(f"{where}.d42: ожидалось булево значение")
 
+        accept_slash = data.get("accept_trailing_slash")
+        if accept_slash is not None and not isinstance(accept_slash, bool):
+            raise ManifestError(f"{where}.accept_trailing_slash: ожидалось булево значение")
+
         operation_id = data.get("operation_id")
         if operation_id is not None and not isinstance(operation_id, str):
             raise ManifestError(f"{where}.operation_id: ожидалась строка")
@@ -396,6 +414,7 @@ class OperationSpec:
             python_path=python_path,
             non_waivable=tuple(non_waivable),
             d42=d42_enabled,
+            accept_trailing_slash=accept_slash,
         )
 
     def resolved_python_path(self) -> tuple[str, ...]:
@@ -420,6 +439,8 @@ class OperationSpec:
             data["non_waivable"] = [item.to_dict() for item in self.non_waivable]
         if not self.d42:
             data["d42"] = False
+        if self.accept_trailing_slash is not None:
+            data["accept_trailing_slash"] = self.accept_trailing_slash
         return data
 
 

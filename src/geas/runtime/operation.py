@@ -315,6 +315,7 @@ class OperationHandle:
     """Иммутабельная ручка одной операции контракта."""
 
     __slots__ = (
+        "_accept_trailing_slash",
         "_d42_modules",
         "_d42_reason",
         "_d42_reasons",
@@ -344,7 +345,9 @@ class OperationHandle:
         d42_modules: Mapping[str, str | None] | None = None,
         d42_reason: str | None = None,
         d42_reasons: Mapping[str, str | None] | None = None,
+        accept_trailing_slash: bool = False,
     ) -> None:
+        self._accept_trailing_slash = accept_trailing_slash
         self._key = key
         self._operation_id = operation_id
         self._method = method
@@ -379,6 +382,16 @@ class OperationHandle:
     def path(self) -> str:
         """Полный шаблон маршрута, включая префикс источника."""
         return self._path
+
+    @property
+    def accept_trailing_slash(self) -> bool:
+        """Принимается ли маршрут и с одним слэшем на конце, и без него.
+
+        Включается в manifest (``accept_trailing_slash`` источника или операции);
+        по умолчанию маршрут сопоставляется строго. ``path`` при этом остаётся в
+        форме спецификации.
+        """
+        return self._accept_trailing_slash
 
     @property
     def source(self) -> str:
@@ -556,7 +569,9 @@ class OperationHandle:
         index: int,
         pinned: Mapping[str, Any],
     ) -> None:
-        extracted = extract_path_params(self._path, path)
+        extracted = extract_path_params(
+            self._path, path, accept_trailing_slash=self._accept_trailing_slash
+        )
         if extracted is None and not segments:
             raise RequestContractError(
                 "маршрут запроса не соответствует шаблону операции",
@@ -998,14 +1013,39 @@ def _import_d42_module(module_name: str) -> Any:
 _TEMPLATE_VARIABLE = re.compile(r"\{([^}]*)\}")
 
 
-def extract_path_params(template: str, actual: str) -> dict[str, str] | None:
+def route_variants(template: str) -> tuple[str, ...]:
+    """Формы маршрута, которые принимает операция с ``accept_trailing_slash``.
+
+    Первой идёт форма из спецификации, второй — та же с добавленным или убранным
+    одним слэшем на конце. Корень ``/`` вариантов не имеет.
+    """
+    if template in ("", "/"):
+        return (template,)
+    if template.endswith("/"):
+        return (template, template[:-1])
+    return (template, template + "/")
+
+
+def extract_path_params(
+    template: str, actual: str, *, accept_trailing_slash: bool = False
+) -> dict[str, str] | None:
     """Разобрать фактический путь по шаблону маршрута.
+
+    С ``accept_trailing_slash`` шаблон принимает ещё и форму с одним слэшем на
+    конце, добавленным или убранным: ``/a/b`` и ``/a/b/`` — один маршрут.
 
     Возвращает ``None``, если путь шаблону не соответствует. Имена переменных
     берутся из шаблона как есть: в реальных спецификациях они не обязаны быть
     валидными Python-идентификаторами, поэтому именованные группы не годятся.
     """
     from urllib.parse import unquote
+
+    if accept_trailing_slash:
+        for variant in route_variants(template):
+            found_params = extract_path_params(variant, actual)
+            if found_params is not None:
+                return found_params
+        return None
 
     names: list[str] = []
     pattern = ["^"]

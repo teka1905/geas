@@ -34,7 +34,7 @@ from .errors import (
     UnsupportedConstructError,
 )
 from .jsonschema_gen import to_json_schema
-from .manifest import Manifest, NonWaivableRule, OperationSpec, Selection
+from .manifest import Manifest, NonWaivableRule, OperationSpec, Selection, SourceSpec
 from .models import (
     ArrayNode,
     BodyContract,
@@ -336,6 +336,13 @@ def _check_python_paths(built: list[BuiltOperation]) -> None:
             )
 
 
+def _accepts_trailing_slash(spec: OperationSpec | None, source: SourceSpec) -> bool:
+    """Значение операции, а если его нет, — источника."""
+    if spec is not None and spec.accept_trailing_slash is not None:
+        return spec.accept_trailing_slash
+    return source.accept_trailing_slash
+
+
 # --------------------------------------------------------------- нормализация
 
 
@@ -412,6 +419,7 @@ def _build_operation(
         unsupported=tuple(unsupported),
         recursive=recursive,
         d42_enabled=spec.d42 if spec is not None else True,
+        accept_trailing_slash=_accepts_trailing_slash(spec, manifest.source(source_name)),
     )
     return BuiltOperation(
         contract=contract,
@@ -729,6 +737,7 @@ def _render_document(
     unsupported: tuple[str, ...],
     recursive: bool,
     d42_enabled: bool,
+    accept_trailing_slash: bool = False,
 ) -> dict[str, Any]:
     """Канонический документ контракта — основа всех generated-артефактов."""
     slug = slugify_key(contract.key)
@@ -764,7 +773,7 @@ def _render_document(
         responses.append(item)
 
     parameter_exports = _parameter_exports(contract, pascal) if d42_enabled else {}
-    return {
+    document: dict[str, Any] = {
         "artifact": {"kind": "operation-contract", "version": 1},
         "key": contract.key,
         "slug": slug,
@@ -788,6 +797,11 @@ def _render_document(
             "parameters": parameter_exports,
         },
     }
+    if accept_trailing_slash:
+        # Ключ пишется только при включённой настройке: у проектов со строгим
+        # маршрутом артефакты остаются прежними байт в байт.
+        document["accept_trailing_slash"] = True
+    return document
 
 
 #: Суффикс имени d42-схемы параметров для каждого места запроса.
