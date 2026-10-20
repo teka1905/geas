@@ -742,7 +742,7 @@ class Manifest:
 
 
 class _SafeDateLoader(yaml.SafeLoader):
-    """``SafeLoader``, у которого несуществующая дата — ошибка YAML с позицией.
+    """``SafeLoader``, у которого недопустимая дата — ошибка YAML с позицией.
 
     PyYAML сам строит ``datetime.date`` из ``2026-11-31`` и падает голым
     ``ValueError`` без строки и ключа. Здесь это ``ConstructorError`` с местом в
@@ -756,7 +756,7 @@ class _SafeDateLoader(yaml.SafeLoader):
             raise yaml.constructor.ConstructorError(
                 None,
                 None,
-                f"несуществующая дата {node.value!r} ({exc}); ожидалось YYYY-MM-DD",
+                f"недопустимая дата или время {node.value!r} ({exc}); ожидалось YYYY-MM-DD",
                 node.start_mark,
             ) from exc
 
