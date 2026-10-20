@@ -94,14 +94,21 @@ def build_response(
     status: int,
     body: Any,
     has_body: bool,
+    as_text: bool = False,
     headers: Mapping[str, str] | None = None,
 ) -> Any:
     """Собрать ответ мока.
 
     Для варианта без тела (например 204) ``json`` не передаётся вовсе: иначе JJ
     отдал бы литерал ``null``, которого в контракте нет.
+
+    ``as_text`` отдаёт строку как есть, а не JSON-литералом в кавычках: так устроено
+    тело ``text/*``. Кодировка берётся из ``Content-Type``, а если ``charset`` там
+    не указан, JJ дописывает ``charset=utf-8``.
     """
     jj = _import_jj()
+    if has_body and as_text:
+        return jj.Response(status=status, text=body, headers=dict(headers or {}))
     if has_body:
         return jj.Response(status=status, json=body, headers=dict(headers or {}))
     return jj.Response(status=status, headers=dict(headers or {}))

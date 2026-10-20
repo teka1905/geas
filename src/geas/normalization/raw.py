@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..media import is_json_media_type, normalize_media_type
 from ..models import Origin, ParameterLocation
 
 __all__ = [
@@ -27,22 +28,6 @@ __all__ = [
     "is_json_media_type",
     "normalize_media_type",
 ]
-
-
-def normalize_media_type(value: str) -> str:
-    """Привести media type к канонической форме.
-
-    Реальные спецификации массово пишут ``application/json;charset=UTF-8`` в
-    разном регистре. Параметры отбрасываются, регистр приводится к нижнему —
-    иначе сравнение content type просто никогда не совпадает.
-    """
-    return value.split(";", 1)[0].strip().lower()
-
-
-def is_json_media_type(value: str) -> bool:
-    """Является ли media type JSON-совместимым."""
-    canonical = normalize_media_type(value)
-    return canonical == "application/json" or canonical.endswith("+json")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -70,6 +55,12 @@ class RawBody:
     #: Причина, по которой вариант не представим контрактом (например бинарный
     #: media type). ``None`` — вариант поддержан.
     unsupported_reason: str | None = None
+    #: Media type взят из общего ``consumes`` корня документа Swagger 2.0, а не объявлен
+    #: операцией для своего тела.
+    shared_media_type: bool = False
+    #: Вариант, который прежние версии в контракт не брали (``*/*`` в OpenAPI 3.0,
+    #: ``text/json``): ошибка его схемы у незакреплённого варианта не валит генерацию.
+    lenient: bool = False
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -85,6 +76,11 @@ class RawResponse:
     #: Причина, по которой вариант не может быть представлен контрактом
     #: (например бинарный media type). ``None`` — вариант поддержан.
     unsupported_reason: str | None = None
+    #: Media type взят из общего списка (``produces`` Swagger 2.0), а не объявлен для
+    #: этого статуса: схема статуса одна на все типы списка.
+    shared_media_type: bool = False
+    #: См. :attr:`RawBody.lenient`.
+    lenient: bool = False
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

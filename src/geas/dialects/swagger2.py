@@ -16,13 +16,13 @@ from __future__ import annotations
 from typing import Any
 
 from ..errors import SpecLoadError, UnsupportedConstructError
+from ..media import JSON_ALIASES, unchecked_body_reason
 from ..models import Origin, ParameterLocation
 from ..normalization.raw import (
     RawBody,
     RawOperation,
     RawParameter,
     RawResponse,
-    is_json_media_type,
     normalize_media_type,
 )
 from ..normalization.refs import SpecRegistry
@@ -32,6 +32,9 @@ from .base import HTTP_METHODS, merge_parameters, parse_location
 __all__ = ["Swagger2Dialect"]
 
 _SWAGGER_METHODS = tuple(method for method in HTTP_METHODS if method != "trace")
+
+#: JSON-типы, которые прежние версии в Swagger 2.0 в контракт не брали.
+_NEW_JSON_TYPES = JSON_ALIASES - {"*/*"}
 
 #: Ключи Items/Parameter Object, которые переносятся в Schema Object как есть.
 _INLINE_SCHEMA_KEYS = (
@@ -124,7 +127,13 @@ class Swagger2Dialect:
                 merged = merge_parameters(shared, own)
                 consumes = _media_types(operation.get("consumes"), root_consumes)
                 produces = _media_types(operation.get("produces"), root_produces)
-                parameters, bodies = self._split_parameters(merged, registry, op_origin, consumes)
+                parameters, bodies = self._split_parameters(
+                    merged,
+                    registry,
+                    op_origin,
+                    consumes,
+                    shared_consumes=not operation.get("consumes"),
+                )
                 collected.append(
                     RawOperation(
                         operation_id=operation.get("operationId"),
@@ -147,6 +156,8 @@ class Swagger2Dialect:
         registry: SpecRegistry,
         op_origin: Origin,
         consumes: list[str],
+        *,
+        shared_consumes: bool,
     ) -> tuple[tuple[RawParameter, ...], tuple[RawBody, ...]]:
         parameters: list[RawParameter] = []
         bodies: list[RawBody] = []
@@ -167,7 +178,7 @@ class Swagger2Dialect:
                     )
                 required = bool(raw.get("required", False))
                 for media_type in consumes:
-                    reason = None if _schema_bearing(media_type) else _media_reason(media_type)
+                    reason = unchecked_body_reason(media_type, schema)
                     bodies.append(
                         RawBody(
                             content_type=media_type,
@@ -175,6 +186,9 @@ class Swagger2Dialect:
                             required=required,
                             origin=origin.child("schema"),
                             unsupported_reason=reason,
+                            shared_media_type=shared_consumes,
+                            # ``*/*`` в Swagger 2.0 был JSON и раньше; ``text/json`` — нет.
+                            lenient=media_type in _NEW_JSON_TYPES,
                         )
                     )
                 continue
@@ -237,7 +251,7 @@ class Swagger2Dialect:
                 )
                 continue
             for media_type in produces:
-                reason = None if _schema_bearing(media_type) else _media_reason(media_type)
+                reason = unchecked_body_reason(media_type, schema)
                 collected.append(
                     RawResponse(
                         status=status,
@@ -246,6 +260,8 @@ class Swagger2Dialect:
                         headers=headers,
                         origin=origin.child("schema"),
                         unsupported_reason=reason,
+                        shared_media_type=True,
+                        lenient=media_type in _NEW_JSON_TYPES,
                     )
                 )
         collected.sort(key=lambda item: (str(item.status), item.content_type or ""))
@@ -253,22 +269,6 @@ class Swagger2Dialect:
 
 
 # ----------------------------------------------------------------- помощники
-
-
-def _schema_bearing(media_type: str) -> bool:
-    """Может ли media type нести JSON-контракт.
-
-    ``*/*`` в Swagger 2.0 массово генерируется серверными фреймворками для
-    JSON-ответов, поэтому считается JSON-совместимым.
-    """
-    return is_json_media_type(media_type) or media_type == "*/*"
-
-
-def _media_reason(media_type: str) -> str:
-    return (
-        f"media type {media_type!r} не является JSON-совместимым, "
-        f"структурный контракт тела для него не строится"
-    )
 
 
 def _media_types(raw: Any, fallback: list[str]) -> list[str]:

@@ -188,7 +188,8 @@ op.request.query  # query-параметры; есть также header и cook
 op.request.body()  # RequestBodyView: content_type, required, json_schema, d42_export
 op.responses  # все варианты ответа
 op.response(status=201)  # один вариант; если вариант один, аргументы можно опустить
-op.unsupported  # варианты, которые нельзя выразить контрактом, с причинами
+op.unchecked  # тела, которые спецификация объявила, а контракт не проверяет, с причинами
+op.unsupported  # то же строками, плюс причины, по которым не сгенерированы d42-схемы
 ```
 
 `response()` и `request.body()` выбирают вариант сами, если он единственный. Если
@@ -280,6 +281,33 @@ nullable-строки), `UUID` и `date` — через `str()`. Получив�
 - в один мок нельзя войти дважды, для повторного использования создайте новый;
 - значение `path_params` не может содержать `/`;
 - для варианта ответа `default` передайте конкретный числовой `status`.
+
+### Текстовые тела и тела без контракта
+
+Тело `text/plain` (и другие конкретные `text/*`) со схемой `type: string` проверяется и
+мокается как строка: `minLength`, `maxLength`, `pattern` и `enum` работают.
+
+```python
+async with operations.ws2.text_preview.mock(response="<b>bold</b>", status=200) as mock:
+    await page.preview_message()
+```
+
+`response` — строка; она уходит как есть, без кавычек JSON, с `Content-Type: text/plain`
+(JJ дописывает `charset=utf-8`; другой `charset` задайте в `response_headers`). Тело
+запроса декодируется по `charset` из `Content-Type` запроса, по умолчанию UTF-8. Схема
+не строки (объект, массив, `nullable`) под закреплённым в manifest `text/*` — ошибка
+генерации с причиной; незакреплённый такой вариант (обычно его порождает генератор:
+общий `produces` Swagger 2.0, Swashbuckle, springdoc для `text/csv`) не проверяется и
+назван в `geas update` с причиной. `text/json` — это JSON; `text/xml`, `text/yaml` и
+`text/event-stream` не проверяются.
+
+`multipart/*`, `application/octet-stream`, XML и прочие media type без контракта
+объявлены спецификацией, но не проверяются. Они доступны как `op.unchecked`, названы в
+`geas list`/`geas update`, а попытка выбрать такой вариант падает с причиной, а не с
+«тела нет». Запрос с объявленным непроверяемым `Content-Type` не считается ошибкой;
+`Content-Type` запроса сопоставляется с объявленными по media range (`image/*`
+покрывает `image/png`, `*/*` — любой тип). Подробности —
+[docs/support-matrix.md](docs/support-matrix.md#текстовые-тела).
 
 ### Проверка без мока
 
@@ -619,8 +647,9 @@ Swagger 2.0 и OpenAPI 3.0.x: `$ref` (локальные и межфайловы
 - Мок подключается только через `async with …mock(…)`. Декоратора и persistent-моков нет.
 - OpenAPI 3.1 не поддерживается.
 - Параметры — только скаляры и массивы скаляров.
-- Тело — только JSON: `application/json`, `…+json`, в Swagger 2.0 ещё `*/*`. Остальные
-  варианты помечаются как непредставимые, но операция генерируется.
+- Тело — JSON (`application/json`, `…+json`, `text/json`, `*/*`) или текст (`text/*`,
+  строка). Остальные media type (`multipart/*`, `application/octet-stream`, XML) объявлены,
+  но не проверяются; операция генерируется.
 - geas не обращается к сети: внешние `$ref` запрещены, спецификация читается только с
   диска.
 

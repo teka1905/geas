@@ -35,7 +35,7 @@ from .errors import (
     ValidationFailedError,
     WaiverError,
 )
-from .models import Direction, ParameterLocation
+from .models import Direction, ParameterLocation, UncheckedVariant
 from .runtime import (
     OperationHandle,
     OperationRegistry,
@@ -73,6 +73,7 @@ __all__ = [
     "ResponseVariantError",
     "ResponseView",
     "SpecLoadError",
+    "UncheckedVariant",
     "UnsupportedConstructError",
     "UnsupportedSpecVersionError",
     "ValidationFailedError",

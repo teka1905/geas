@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import ArtifactError, OperationLookupError
-from ..models import ParameterLocation
+from ..models import Direction, ParameterLocation, UncheckedVariant
 from .description import join_pointer
 from .operation import (
     OperationHandle,
@@ -80,6 +80,9 @@ def handle_from_document(
                 modules[part] = f"{d42_package}.{module}"
             sources[part] = _d42_source(directory, module)
 
+    unchecked = tuple(
+        UncheckedVariant.from_document(item) for item in document.get("unchecked") or ()
+    )
     request_raw = document["request"]
     parameters = [_parameter(item) for item in request_raw["parameters"]]
     parameter_exports = d42_section.get("parameters")
@@ -114,6 +117,7 @@ def handle_from_document(
         header=tuple(p for p in parameters if p.location is ParameterLocation.HEADER),
         cookie=tuple(p for p in parameters if p.location is ParameterLocation.COOKIE),
         parameter_sets=tuple(parameter_sets),
+        unchecked_bodies=tuple(item for item in unchecked if item.direction is Direction.REQUEST),
         bodies=tuple(
             RequestBodyView(
                 content_type=item["content_type"],
@@ -159,6 +163,7 @@ def handle_from_document(
         request=request,
         responses=responses,
         unsupported=tuple(document.get("unsupported") or ()),
+        unchecked=unchecked,
         d42_modules=modules,
         d42_reason=d42_reason,
         d42_reasons=d42_reasons,

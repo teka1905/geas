@@ -6,6 +6,7 @@ generated-реестром и проверять данные по JSON Schema.
 
 from __future__ import annotations
 
+from ..models import UncheckedVariant
 from .description import DEFAULT_MAX_DEPTH, describe_contract
 from .operation import (
     OperationHandle,
@@ -26,6 +27,7 @@ __all__ = [
     "RequestBodyView",
     "RequestView",
     "ResponseView",
+    "UncheckedVariant",
     "decode_parameter",
     "describe_contract",
     "handle_from_document",
