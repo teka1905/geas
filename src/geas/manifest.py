@@ -50,6 +50,7 @@ __all__ = [
     "default_manifest_document",
     "dump_manifest",
     "load_manifest",
+    "parse_calendar_date",
 ]
 
 #: Версия формата manifest. Ядро читает только эту версию.

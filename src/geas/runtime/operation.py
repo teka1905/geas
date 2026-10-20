@@ -1040,15 +1040,25 @@ def _segment_pattern(segment: str) -> re.Pattern[str]:
     return re.compile("".join(pattern))
 
 
+def _segment_edges(segment: str) -> tuple[str, str]:
+    """Литеральный префикс до первой переменной и суффикс после последней."""
+    return segment[: segment.index("{")], segment[segment.rindex("}") + 1 :]
+
+
 def _segments_overlap(first: str, second: str) -> bool:
     first_templated = _TEMPLATE_VARIABLE.search(first) is not None
     second_templated = _TEMPLATE_VARIABLE.search(second) is not None
     if not first_templated and not second_templated:
         return first == second
     if first_templated and second_templated:
-        # Пересечение двух шаблонных сегментов в общем случае не вычислить
-        # дёшево; считаем, что пересекаются.
-        return True
+        # Точное пересечение двух шаблонов не вычислить дёшево. Необходимое
+        # условие — совместимые литеральные края: путь начинается с обоих
+        # префиксов и кончается обоими суффиксами. Остальное считаем пересечением.
+        first_prefix, first_suffix = _segment_edges(first)
+        second_prefix, second_suffix = _segment_edges(second)
+        return (
+            first_prefix.startswith(second_prefix) or second_prefix.startswith(first_prefix)
+        ) and (first_suffix.endswith(second_suffix) or second_suffix.endswith(first_suffix))
     templated, literal = (first, second) if first_templated else (second, first)
     return _segment_pattern(templated).fullmatch(literal) is not None
 
@@ -1057,8 +1067,8 @@ def route_templates_overlap(first: str, second: str) -> bool:
     """Может ли один фактический путь подойти под оба шаблона маршрута.
 
     Сравнение посегментное: литерал совпадает с равным литералом или с шаблонным
-    сегментом, который его принимает. Два шаблонных сегмента считаются
-    пересекающимися.
+    сегментом, который его принимает. Два шаблонных сегмента пересекаются, если
+    совместимы их литеральные края (``{id}.json`` и ``{name}.xml`` — нет).
     """
     first_segments = first.split("/")
     second_segments = second.split("/")

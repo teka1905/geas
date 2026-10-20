@@ -420,11 +420,10 @@ class _RouteNode:
 
 
 def _check_route_pair(first: BuiltOperation, second: BuiltOperation) -> None:
+    # Пары собираются только от операций с настройкой, так что список не пуст.
     enabled = [
         item.contract.key for item in (first, second) if item.document.get("accept_trailing_slash")
     ]
-    if not enabled:
-        return
     if not _forms_overlap(first, second, with_setting=True):
         return
     if _forms_overlap(first, second, with_setting=False):

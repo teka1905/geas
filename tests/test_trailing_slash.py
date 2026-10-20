@@ -619,6 +619,48 @@ def test_literal_overlap_without_the_setting_is_left_to_the_spec(tmp_path: Path)
     project.build()
 
 
+def test_disjoint_templated_segments_do_not_block_the_setting(tmp_path: Path) -> None:
+    """``/files/{id}.json`` со слэшем не принимает ни одного пути ``/files/{name}.xml/``."""
+    spec = """\
+openapi: "3.0.3"
+
+info:
+  title: Files API
+  version: "1.0.0"
+
+paths:
+  /files/{id}.json:
+    get:
+      operationId: asJson
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        "204":
+          description: Готово
+  /files/{name}.xml/:
+    get:
+      operationId: asXml
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+      responses:
+        "204":
+          description: Готово
+"""
+    project = make_project(tmp_path, package="files_contracts")
+    project.write_spec("api/openapi.yaml", spec)
+    project.write_manifest(
+        sources={"main": {"path": "api/openapi.yaml", "root": "api", "selection": "all"}},
+        operations={
+            "main.asJson": {
+                "source": "main",
+                "operation_id": "asJson",
+                "accept_trailing_slash": True,
+            }
+        },
+    )
+    project.build()
+
+
 @pytest.mark.parametrize(
     ("first", "second", "expected"),
     [
@@ -630,6 +672,11 @@ def test_literal_overlap_without_the_setting_is_left_to_the_spec(tmp_path: Path)
         ("/a/{id}.json", "/a/x.json", True),
         ("/a/{id}.json", "/a/x.xml", False),
         ("/a/{id}", "/b/{id}", False),
+        ("/a/{x}.json", "/a/{y}.xml", False),
+        ("/a/{x}.json", "/a/{y}", True),
+        ("/a/v{x}", "/a/v1{y}", True),
+        ("/a/v{x}", "/a/w{y}", False),
+        ("/a/{x}-{y}", "/a/{z}", True),
     ],
 )
 def test_route_templates_overlap(first: str, second: str, expected: bool) -> None:
