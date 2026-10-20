@@ -55,6 +55,7 @@ from .manifest import (
     Manifest,
     OperationSpec,
     Selection,
+    date_error_hint,
     default_manifest_document,
     dump_manifest,
     load_manifest,
@@ -343,7 +344,9 @@ def _cmd_add(args: argparse.Namespace) -> int:
     try:
         document = yaml.safe_load(original_text)
     except (yaml.YAMLError, ValueError) as exc:
-        raise ManifestError(f"manifest {manifest_path} не разбирается: {exc}") from exc
+        raise ManifestError(
+            f"manifest {manifest_path} не разбирается: {exc}{date_error_hint(exc)}"
+        ) from exc
     if not isinstance(document, dict):
         raise ManifestError(f"{manifest_path}: ожидался объект")
 

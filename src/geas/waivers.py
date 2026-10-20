@@ -37,7 +37,7 @@ import yaml
 
 from .errors import ContractError, WaiverError
 from .fingerprints import ANNOTATION_KEYS, digest, semantic_source_digest, strip_annotations
-from .manifest import Manifest, NonWaivableAssertion, parse_calendar_date
+from .manifest import Manifest, NonWaivableAssertion, date_error_hint, parse_calendar_date
 from .models import Direction
 from .paths import ContractPath, body_path, format_contract_path, parse_contract_path
 
@@ -739,7 +739,7 @@ def _load_document(path: Path) -> Any:
         return yaml.safe_load(text)
     except (yaml.YAMLError, ValueError) as exc:
         # ``ValueError`` — от JSON и от несуществующей YAML-даты в ``expires_at``.
-        raise WaiverError(f"{path} не разбирается: {exc}") from exc
+        raise WaiverError(f"{path} не разбирается: {exc}{date_error_hint(exc)}") from exc
 
 
 def load_waivers(path: Path | str) -> WaiverSet:

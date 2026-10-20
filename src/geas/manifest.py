@@ -47,6 +47,7 @@ __all__ = [
     "SourceSpec",
     "TemporarySetting",
     "UnknownFormatPolicy",
+    "date_error_hint",
     "default_manifest_document",
     "dump_manifest",
     "load_manifest",
@@ -740,6 +741,13 @@ class Manifest:
         )
 
 
+def date_error_hint(exc: Exception) -> str:
+    """Подсказка для несуществующей YAML-даты: PyYAML не называет ни строку, ни ключ."""
+    if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError):
+        return ". Проверьте даты YYYY-MM-DD, например expires_at"
+    return ""
+
+
 def _load_document(path: Path) -> Any:
     """Прочитать YAML или JSON. Используется только ``yaml.safe_load``."""
     try:
@@ -753,7 +761,7 @@ def _load_document(path: Path) -> Any:
     except (yaml.YAMLError, ValueError) as exc:
         # ``ValueError`` — от JSON и от несуществующей YAML-даты вроде 2026-11-31:
         # PyYAML строит ``datetime.date`` сам и падает ещё при разборе.
-        raise ManifestError(f"manifest {path} не разбирается: {exc}") from exc
+        raise ManifestError(f"manifest {path} не разбирается: {exc}{date_error_hint(exc)}") from exc
 
 
 def load_manifest(path: Path | str) -> Manifest:

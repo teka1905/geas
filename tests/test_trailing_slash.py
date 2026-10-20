@@ -401,6 +401,7 @@ def test_impossible_yaml_date_is_a_manifest_error(tmp_path: Path, command: tuple
     assert result.returncode == 1, result.stderr
     assert "не разбирается" in result.stderr
     assert "Traceback" not in result.stderr
+    assert "Проверьте даты YYYY-MM-DD" in result.stderr
 
 
 def test_impossible_yaml_date_in_waivers_is_a_waiver_error(tmp_path: Path) -> None:
@@ -409,7 +410,7 @@ def test_impossible_yaml_date_in_waivers_is_a_waiver_error(tmp_path: Path) -> No
 
     path = tmp_path / "waivers.yaml"
     path.write_text("version: 1\nwaivers:\n  - expires_at: 2026-02-30\n", encoding="utf-8")
-    with pytest.raises(WaiverError, match="не разбирается"):
+    with pytest.raises(WaiverError, match=r"не разбирается.*Проверьте даты"):
         load_waivers(path)
 
 
@@ -663,7 +664,7 @@ def test_template_that_starts_catching_a_literal_route_is_rejected(tmp_path: Pat
             "main.newDoc": ("newDoc", {}),
         },
     )
-    with pytest.raises(ManifestError, match=r"accept_trailing_slash: false у 'main\.getDoc'$"):
+    with pytest.raises(ManifestError, match=r"accept_trailing_slash: false у 'main\.getDoc';"):
         project.build()
 
 
@@ -774,6 +775,7 @@ def test_add_refuses_an_operation_merged_by_the_setting(tmp_path: Path) -> None:
     assert result.returncode == 1, result.stderr
     assert "принимают один и тот же маршрут" in result.stderr
     assert "'main.twinPlain', 'main.twinSlash'" in result.stderr
+    assert "добавьте её вручную" in result.stderr
     assert project.manifest_bytes() == before
 
 

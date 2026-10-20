@@ -434,7 +434,8 @@ def _check_route_pair(first: BuiltOperation, second: BuiltOperation) -> None:
         f"{second.contract.key!r} ({second.contract.method} "
         f"{second.contract.path}) принимают один и тот же маршрут. "
         f"Задайте accept_trailing_slash: false у "
-        f"{', '.join(repr(key) for key in enabled)}"
+        f"{', '.join(repr(key) for key in enabled)}; "
+        f"если записи операции в manifest нет, добавьте её вручную"
     )
 
 
