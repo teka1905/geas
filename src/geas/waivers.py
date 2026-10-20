@@ -737,7 +737,8 @@ def _load_document(path: Path) -> Any:
         if path.suffix.lower() == ".json":
             return json.loads(text)
         return yaml.safe_load(text)
-    except (yaml.YAMLError, json.JSONDecodeError) as exc:
+    except (yaml.YAMLError, ValueError) as exc:
+        # ``ValueError`` — от JSON и от несуществующей YAML-даты в ``expires_at``.
         raise WaiverError(f"{path} не разбирается: {exc}") from exc
 
 

@@ -839,7 +839,7 @@ def _render_document(
     unsupported: tuple[str, ...],
     recursive: bool,
     d42_enabled: bool,
-    accept_trailing_slash: bool = False,
+    accept_trailing_slash: bool,
 ) -> dict[str, Any]:
     """Канонический документ контракта — основа всех generated-артефактов."""
     slug = slugify_key(contract.key)

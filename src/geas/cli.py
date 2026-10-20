@@ -342,7 +342,7 @@ def _cmd_add(args: argparse.Namespace) -> int:
         raise ManifestError(f"не удалось прочитать manifest {manifest_path}: {exc}") from exc
     try:
         document = yaml.safe_load(original_text)
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, ValueError) as exc:
         raise ManifestError(f"manifest {manifest_path} не разбирается: {exc}") from exc
     if not isinstance(document, dict):
         raise ManifestError(f"{manifest_path}: ожидался объект")

@@ -381,6 +381,38 @@ def test_expired_temporary_setting_fails_every_command(
     assert project.manifest_bytes() == before
 
 
+@pytest.mark.parametrize(
+    "command",
+    [("check",), ("add", "main.getItem", "--source", "main", "--operation-id", "getItem")],
+    ids=lambda command: command[0],
+)
+def test_impossible_yaml_date_is_a_manifest_error(tmp_path: Path, command: tuple[str, ...]) -> None:
+    """PyYAML сам строит дату и падает на 2026-11-31 — это ошибка manifest, не traceback."""
+    project = temporary_project(tmp_path, in_days(30))
+    project.manifest_path.write_text(
+        project.manifest_path.read_text(encoding="utf-8").replace(
+            f"'{in_days(30).isoformat()}'", "2026-11-31"
+        ),
+        encoding="utf-8",
+    )
+
+    result = project.cli(*command)
+
+    assert result.returncode == 1, result.stderr
+    assert "не разбирается" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_impossible_yaml_date_in_waivers_is_a_waiver_error(tmp_path: Path) -> None:
+    from geas.errors import WaiverError
+    from geas.waivers import load_waivers
+
+    path = tmp_path / "waivers.yaml"
+    path.write_text("version: 1\nwaivers:\n  - expires_at: 2026-02-30\n", encoding="utf-8")
+    with pytest.raises(WaiverError, match="не разбирается"):
+        load_waivers(path)
+
+
 def test_temporary_setting_obeys_max_days(tmp_path: Path) -> None:
     project = temporary_project(tmp_path, in_days(91))
     with pytest.raises(ManifestError, match="waiver_max_days"):
@@ -728,6 +760,23 @@ def test_add_keeps_a_temporary_setting(tmp_path: Path) -> None:
     assert project.cli("update").returncode == 0
 
 
+def test_add_refuses_an_operation_merged_by_the_setting(tmp_path: Path) -> None:
+    """Новая операция, которую склеила бы уже включённая настройка, не добавляется."""
+    project = twin_project(
+        tmp_path,
+        source={"selection": "explicit", "accept_trailing_slash": True},
+        operations={"main.twinPlain": {"source": "main", "operation_id": "twinPlain"}},
+    )
+    before = project.manifest_bytes()
+
+    result = project.cli("add", "main.twinSlash", "--source", "main", "--operation-id", "twinSlash")
+
+    assert result.returncode == 1, result.stderr
+    assert "принимают один и тот же маршрут" in result.stderr
+    assert "'main.twinPlain', 'main.twinSlash'" in result.stderr
+    assert project.manifest_bytes() == before
+
+
 def test_add_reports_a_conflict_with_a_temporary_setting(tmp_path: Path) -> None:
     """Сырой YAML с датой печатается в сообщении о конфликте, а не роняет ``add``."""
     project = temporary_project(tmp_path, in_days(30))
@@ -851,6 +900,18 @@ async def test_mock_does_not_intercept_other_routes(
     async with operations.lax.load_tree.mock(status=204):
         assert await call(jj_server, "POST", "/search/tree//") == 404
         assert await call(jj_server, "POST", "/search/tre/") == 404
+
+
+@pytest.mark.parametrize("path", ["/declared/", "/declared"])
+async def test_mock_of_a_slash_route_intercepts_the_form_without_it(
+    jj_server: JJServer,  # noqa: F811 - фикстура
+    operations: Any,
+    path: str,
+) -> None:
+    async with operations.lax.declared.mock(status=204, wait_for_requests=1) as mock:
+        assert await call(jj_server, "POST", path) == 204
+
+    assert [item.path for item in mock.requests] == [path]
 
 
 async def test_strict_mock_does_not_intercept_slash(
