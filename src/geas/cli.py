@@ -55,10 +55,10 @@ from .manifest import (
     Manifest,
     OperationSpec,
     Selection,
-    date_error_hint,
     default_manifest_document,
     dump_manifest,
     load_manifest,
+    load_yaml,
 )
 from .models import Direction, ParameterLocation
 from .naming import python_path_from_key
@@ -342,11 +342,9 @@ def _cmd_add(args: argparse.Namespace) -> int:
     except OSError as exc:
         raise ManifestError(f"не удалось прочитать manifest {manifest_path}: {exc}") from exc
     try:
-        document = yaml.safe_load(original_text)
+        document = load_yaml(original_text)
     except (yaml.YAMLError, ValueError) as exc:
-        raise ManifestError(
-            f"manifest {manifest_path} не разбирается: {exc}{date_error_hint(exc)}"
-        ) from exc
+        raise ManifestError(f"manifest {manifest_path} не разбирается: {exc}") from exc
     if not isinstance(document, dict):
         raise ManifestError(f"{manifest_path}: ожидался объект")
 

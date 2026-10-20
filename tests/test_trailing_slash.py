@@ -15,6 +15,7 @@ from typing import Any
 
 import aiohttp
 import pytest
+import yaml
 
 from geas.errors import ManifestError, RequestContractError
 from geas.manifest import Manifest, OperationSpec, SourceSpec, TemporarySetting
@@ -401,7 +402,16 @@ def test_impossible_yaml_date_is_a_manifest_error(tmp_path: Path, command: tuple
     assert result.returncode == 1, result.stderr
     assert "не разбирается" in result.stderr
     assert "Traceback" not in result.stderr
-    assert "Проверьте даты YYYY-MM-DD" in result.stderr
+    assert "несуществующая дата '2026-11-31'" in result.stderr
+    assert "line " in result.stderr
+
+
+def test_load_yaml_is_as_safe_as_safe_load() -> None:
+    from geas.manifest import load_yaml
+
+    assert load_yaml("d: 2026-12-31\nn: 1\n") == {"d": dt.date(2026, 12, 31), "n": 1}
+    with pytest.raises(yaml.YAMLError):
+        load_yaml("x: !!python/object/apply:os.getcwd []\n")
 
 
 def test_impossible_yaml_date_in_waivers_is_a_waiver_error(tmp_path: Path) -> None:
@@ -410,7 +420,7 @@ def test_impossible_yaml_date_in_waivers_is_a_waiver_error(tmp_path: Path) -> No
 
     path = tmp_path / "waivers.yaml"
     path.write_text("version: 1\nwaivers:\n  - expires_at: 2026-02-30\n", encoding="utf-8")
-    with pytest.raises(WaiverError, match=r"не разбирается.*Проверьте даты"):
+    with pytest.raises(WaiverError, match=r"не разбирается.*несуществующая дата '2026-02-30'"):
         load_waivers(path)
 
 

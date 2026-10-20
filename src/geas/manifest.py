@@ -47,10 +47,10 @@ __all__ = [
     "SourceSpec",
     "TemporarySetting",
     "UnknownFormatPolicy",
-    "date_error_hint",
     "default_manifest_document",
     "dump_manifest",
     "load_manifest",
+    "load_yaml",
     "parse_calendar_date",
 ]
 
@@ -741,15 +741,38 @@ class Manifest:
         )
 
 
-def date_error_hint(exc: Exception) -> str:
-    """Подсказка для несуществующей YAML-даты: PyYAML не называет ни строку, ни ключ."""
-    if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError):
-        return ". Проверьте даты YYYY-MM-DD, например expires_at"
-    return ""
+class _SafeDateLoader(yaml.SafeLoader):
+    """``SafeLoader``, у которого несуществующая дата — ошибка YAML с позицией.
+
+    PyYAML сам строит ``datetime.date`` из ``2026-11-31`` и падает голым
+    ``ValueError`` без строки и ключа. Здесь это ``ConstructorError`` с местом в
+    файле; набор конструируемых типов тот же, что у ``yaml.safe_load``.
+    """
+
+    def construct_yaml_timestamp(self, node: yaml.ScalarNode) -> Any:
+        try:
+            return super().construct_yaml_timestamp(node)
+        except ValueError as exc:
+            raise yaml.constructor.ConstructorError(
+                None,
+                None,
+                f"несуществующая дата {node.value!r} ({exc}); ожидалось YYYY-MM-DD",
+                node.start_mark,
+            ) from exc
+
+
+_SafeDateLoader.add_constructor(
+    "tag:yaml.org,2002:timestamp", _SafeDateLoader.construct_yaml_timestamp
+)
+
+
+def load_yaml(text: str) -> Any:
+    """Разобрать YAML так же безопасно, как ``yaml.safe_load``, с понятной ошибкой даты."""
+    return yaml.load(text, Loader=_SafeDateLoader)
 
 
 def _load_document(path: Path) -> Any:
-    """Прочитать YAML или JSON. Используется только ``yaml.safe_load``."""
+    """Прочитать YAML или JSON. YAML разбирается только безопасно, см. :func:`load_yaml`."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -757,11 +780,10 @@ def _load_document(path: Path) -> Any:
     try:
         if path.suffix.lower() == ".json":
             return json.loads(text)
-        return yaml.safe_load(text)
+        return load_yaml(text)
     except (yaml.YAMLError, ValueError) as exc:
-        # ``ValueError`` — от JSON и от несуществующей YAML-даты вроде 2026-11-31:
-        # PyYAML строит ``datetime.date`` сам и падает ещё при разборе.
-        raise ManifestError(f"manifest {path} не разбирается: {exc}{date_error_hint(exc)}") from exc
+        # ``ValueError`` — от JSON и от редких литералов YAML вроде ``0x_``.
+        raise ManifestError(f"manifest {path} не разбирается: {exc}") from exc
 
 
 def load_manifest(path: Path | str) -> Manifest:
