@@ -375,8 +375,8 @@ def _cmd_add(args: argparse.Namespace) -> int:
     if current_entry is not None:
         print(
             f"операция {args.key} уже есть в manifest, но с другими параметрами.\n"
-            f"  сейчас:    {json.dumps(operations[args.key], ensure_ascii=False, sort_keys=True)}\n"
-            f"  предложено: {json.dumps(entry, ensure_ascii=False, sort_keys=True)}\n"
+            f"  сейчас:    {_entry_json(operations[args.key])}\n"
+            f"  предложено: {_entry_json(entry)}\n"
             f"Отредактируйте manifest вручную, если это осознанное изменение",
             file=sys.stderr,
         )
@@ -402,6 +402,11 @@ def _cmd_add(args: argparse.Namespace) -> int:
     print(f"операция {args.key} добавлена в {manifest_path}")
     print("Теперь запустите 'geas update', чтобы обновить артефакты")
     return EXIT_OK
+
+
+def _entry_json(entry: Any) -> str:
+    """Запись manifest одной строкой; YAML-даты (сроки настроек) печатаются как ISO."""
+    return json.dumps(entry, ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _operation_binding_matches(*, current: dict[str, Any], proposed: dict[str, Any]) -> bool:

@@ -269,7 +269,8 @@ def test_temporary_setting_enables_the_operation() -> None:
         reason="спецификация потеряла слэш из @Path бэкенда",
         expires_at=in_days(30),
     )
-    assert spec.to_dict()["accept_trailing_slash"] == temporary()
+    # Срок остаётся датой: dump_manifest пишет его голым, как в исходном YAML.
+    assert spec.to_dict()["accept_trailing_slash"] == temporary(expires_at=in_days(30))
 
 
 def test_temporary_setting_accepts_a_yaml_date() -> None:
@@ -296,6 +297,14 @@ def test_temporary_setting_is_validated(overrides: dict[str, Any], message: str)
         OperationSpec.from_dict(
             "a.b", {"source": "main", "accept_trailing_slash": temporary(**overrides)}
         )
+
+
+def test_explicit_null_is_rejected() -> None:
+    """Пустое значение не наследуется молча — как у ``d42`` и у источника."""
+    with pytest.raises(ManifestError, match="accept_trailing_slash"):
+        OperationSpec.from_dict("a.b", {"source": "main", "accept_trailing_slash": None})
+    with pytest.raises(ManifestError, match="accept_trailing_slash"):
+        SourceSpec.from_dict("main", {"path": "a.yaml", "accept_trailing_slash": None})
 
 
 def test_temporary_setting_requires_expiry() -> None:
@@ -348,9 +357,28 @@ def test_expired_temporary_setting_fails_the_build(tmp_path: Path) -> None:
     with pytest.raises(ManifestError, match="срок истёк"):
         project.load().check_temporary_settings(today=dt.date.today())
 
-    result = project.cli("update")
-    assert result.returncode != 0
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ("update",),
+        ("check",),
+        ("diff",),
+        ("add", "main.getItem", "--source", "main", "--operation-id", "getItem"),
+    ],
+    ids=lambda command: command[0],
+)
+def test_expired_temporary_setting_fails_every_command(
+    tmp_path: Path, command: tuple[str, ...]
+) -> None:
+    project = temporary_project(tmp_path, in_days(-1))
+    before = project.manifest_bytes()
+
+    result = project.cli(*command)
+
+    assert result.returncode == 1, result.stderr
     assert "срок истёк" in result.stderr
+    assert project.manifest_bytes() == before
 
 
 def test_temporary_setting_obeys_max_days(tmp_path: Path) -> None:
@@ -695,7 +723,28 @@ def test_add_keeps_a_temporary_setting(tmp_path: Path) -> None:
     assert restored is not None
     assert restored.trailing_slash_until is not None
     assert restored.trailing_slash_until.issue == "SAMSARA-24848"
+    text = project.manifest_path.read_text(encoding="utf-8")
+    assert f"expires_at: {in_days(30).isoformat()}\n" in text
     assert project.cli("update").returncode == 0
+
+
+def test_add_reports_a_conflict_with_a_temporary_setting(tmp_path: Path) -> None:
+    """Сырой YAML с датой печатается в сообщении о конфликте, а не роняет ``add``."""
+    project = temporary_project(tmp_path, in_days(30))
+    project.manifest_path.write_text(
+        project.manifest_path.read_text(encoding="utf-8").replace(
+            f"'{in_days(30).isoformat()}'", in_days(30).isoformat()
+        ),
+        encoding="utf-8",
+    )
+    before = project.manifest_bytes()
+
+    result = project.cli("add", "main.loadTree", "--source", "main", "--operation-id", "getItem")
+
+    assert result.returncode == 2, result.stderr
+    assert "уже есть в manifest" in result.stderr
+    assert in_days(30).isoformat() in result.stderr
+    assert project.manifest_bytes() == before
 
 
 # ----------------------------------------------- validate_recorded_request

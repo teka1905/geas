@@ -358,11 +358,9 @@ class TemporarySetting:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "issue": self.issue,
-            "reason": self.reason,
-            "expires_at": self.expires_at.isoformat(),
-        }
+        # Дата, а не строка: ``dump_manifest`` пишет её голой, как в исходном YAML,
+        # и ``geas add`` не добавляет кавычки при перезаписи manifest.
+        return {"issue": self.issue, "reason": self.reason, "expires_at": self.expires_at}
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -458,8 +456,15 @@ class OperationSpec:
         if not isinstance(d42_enabled, bool):
             raise ManifestError(f"{where}.d42: ожидалось булево значение")
 
+        # Отсутствие ключа — «взять значение источника»; явный ``null`` — ошибка, как
+        # у ``d42`` и у источника: пустое значение не должно молча наследоваться.
         accept_slash = data.get("accept_trailing_slash")
         trailing_slash_until: TemporarySetting | None = None
+        if "accept_trailing_slash" in data and accept_slash is None:
+            raise ManifestError(
+                f"{where}.accept_trailing_slash: ожидалось булево значение или объект "
+                f"с полями issue, reason, expires_at"
+            )
         if isinstance(accept_slash, dict):
             # Объект вместо ``true`` — включение на время, с тикетом и сроком.
             trailing_slash_until = TemporarySetting.from_dict(
