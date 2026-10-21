@@ -27,6 +27,7 @@ from support import Project, make_project, spec
 _SOURCES: dict[str, tuple[str, tuple[str, ...]]] = {
     "main": ("api/openapi.yaml", ("basic", "openapi30.yaml")),
     "multi": ("api/multi.yaml", ("features", "multi_content_types.yaml")),
+    "params": ("api/parameters.yaml", ("features", "parameters_d42.yaml")),
 }
 
 # Операции basic/ идут с ``d42: false`` намеренно: эти тесты проверяют CLI core,
@@ -34,6 +35,11 @@ _SOURCES: dict[str, tuple[str, tuple[str, ...]]] = {
 _LIST = {"source": "main", "operation_id": "listDocuments", "d42": False}
 _CREATE = {"source": "main", "operation_id": "createDocument", "d42": False}
 _REPLACE = {"source": "multi", "operation_id": "replaceDocumentContent"}
+# Операции с d42, от которого генерация отказывается: у ``createDocument`` — в теле
+# запроса и в ответе (pattern вместе с minLength/maxLength), у ``mixedCaseHeaders`` —
+# в заголовках.
+_CREATE_D42 = {"source": "main", "operation_id": "createDocument"}
+_MIXED_HEADERS = {"source": "params", "operation_id": "mixedCaseHeaders"}
 
 
 def demo_project(root: Path, operations: Mapping[str, Any]) -> Project:
@@ -747,6 +753,52 @@ def test_diff_reports_removed_operation(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "операция исчезла: api.createDocument" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [pytest.param(_CREATE_D42, id="body"), pytest.param(_MIXED_HEADERS, id="parameters")],
+)
+def test_diff_matches_contract_with_d42_refusal(
+    tmp_path: Path, operation: Mapping[str, Any]
+) -> None:
+    """Отказ d42 вписывается в контракт при записи, и ``diff`` сравнивает с тем же.
+
+    Иначе сразу после ``update`` отказ выглядит изменением ``[контракт]`` с кодом 1,
+    хотя ``check`` зелёный.
+    """
+    project = demo_project(tmp_path / "workspace", {"api.op": operation})
+    assert project.cli("update").returncode == 0
+    assert project.cli("check").returncode == 0
+    document = project.contract_document("api__op")
+    assert any(item.startswith("d42 (") for item in document["unsupported"])
+
+    result = project.cli("diff")
+
+    assert result.returncode == 0, result.stdout
+    assert "контракты не изменились" in result.stdout
+    payload = json.loads(project.cli("diff", "--json").stdout)
+    assert payload["changed"] == []
+    assert payload["is_semantic"] is False
+
+
+def test_diff_with_d42_refusal_reports_only_spec_change(tmp_path: Path) -> None:
+    """Настоящее изменение у операции с отказом d42 видно без шума от этого отказа."""
+    project = demo_project(tmp_path / "workspace", {"api.createDocument": _CREATE_D42})
+    assert project.cli("update").returncode == 0
+
+    def relax(data: dict[str, Any]) -> None:
+        data["components"]["schemas"]["DocumentBase"]["required"] = ["title"]
+
+    edit_spec(project, "api/openapi.yaml", relax)
+
+    result = project.cli("diff", "--json")
+
+    assert result.returncode == 1
+    (changed,) = json.loads(result.stdout)["changed"]
+    pointers = [change["pointer"] for change in changed["semantic"] + changed["cosmetic"]]
+    assert any("required" in pointer for pointer in pointers)
+    assert not [pointer for pointer in pointers if "d42" in pointer or "unsupported" in pointer]
 
 
 # -------------------------------------------------------------------- show

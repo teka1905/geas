@@ -206,6 +206,23 @@ def test_cli_help_runs_without_optional_extras() -> None:
     assert "EXIT 0" in result.stdout
 
 
+def test_diff_without_d42_extra_names_the_install_command(project_root: str) -> None:
+    """``geas diff`` при включённом d42 и без ``[d42]`` называет команду установки.
+
+    ``diff`` сравнивает с тем, что записал бы ``update``, поэтому, как и ``update``,
+    без d42 не обходится. Ошибка уходит в stderr, stdout остаётся пустым: иначе
+    код ``1`` не отличить от изменения ``[контракт]``.
+    """
+    manifest = str(Path(project_root) / "manifest.yaml")
+    result = run(
+        f"from geas.cli import main\nprint('EXIT', main(['-m', {manifest!r}, 'diff', '--json']))\n",
+        block=("d42",),
+    )
+
+    assert result.stdout == "EXIT 1\n"
+    assert "geas[d42]" in result.stderr
+
+
 def test_blocker_really_blocks() -> None:
     """Контроль самого стенда: без блокировки d42 импортируется, с ней — нет.
 

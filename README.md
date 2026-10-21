@@ -44,7 +44,7 @@ pip install 'geas[all]'     # всё сразу
 | Extra | Зависимость | Что без него не работает |
 | --- | --- | --- |
 | — | — | всё остальное работает: manifest, генерация, JSON Schema, CLI, `validate_*` |
-| `[d42]` | `d42>=2.3,<3` | d42-схемы, `build_fixture`, `overlay_generators`; `update`/`check`, если d42 включён хотя бы у одной операции |
+| `[d42]` | `d42>=2.3,<3` | d42-схемы, `build_fixture`, `overlay_generators`; `update`/`check`/`diff`, если d42 включён хотя бы у одной операции |
 | `[jj]` | `jj>=2.9,<3` | `operation.mock()` |
 
 Без нужного extra вы получите `MissingExtraError` с командой установки, например:
