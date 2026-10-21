@@ -36,7 +36,8 @@ _LIST = {"source": "main", "operation_id": "listDocuments", "d42": False}
 _CREATE = {"source": "main", "operation_id": "createDocument", "d42": False}
 _REPLACE = {"source": "multi", "operation_id": "replaceDocumentContent"}
 # Операции с d42, от которого генерация отказывается: у ``createDocument`` — в теле
-# (pattern вместе с minLength/maxLength), у ``mixedCaseHeaders`` — в заголовках.
+# запроса и в ответе (pattern вместе с minLength/maxLength), у ``mixedCaseHeaders`` —
+# в заголовках.
 _CREATE_D42 = {"source": "main", "operation_id": "createDocument"}
 _MIXED_HEADERS = {"source": "params", "operation_id": "mixedCaseHeaders"}
 
