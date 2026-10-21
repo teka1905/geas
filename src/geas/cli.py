@@ -737,7 +737,13 @@ def _cmd_check(args: argparse.Namespace) -> int:
 def _cmd_diff(args: argparse.Namespace) -> int:
     manifest, waivers = _load(args)
     result = build_contracts(manifest, waivers)
-    after = {built.contract.key: built.document for built in result.operations}
+    # Сравнивается то, что запишет ``update``, а не документ сборки: отказ d42
+    # вписывается в контракт только при рендере артефактов.
+    rendered = render_artifacts(manifest, result).by_path()
+    after = {
+        built.contract.key: json.loads(rendered[f"contracts/{built.document['slug']}.json"].content)
+        for built in result.operations
+    }
 
     output_dir = manifest.output_dir()
     index = read_generated_index(output_dir)
