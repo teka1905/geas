@@ -71,22 +71,28 @@ def check_version() -> str:
 def build_matcher(
     *,
     method: str,
-    path: str,
+    path: str | Sequence[str],
     params: Mapping[str, Any] | None = None,
     headers: Mapping[str, Any] | None = None,
 ) -> Any:
     """Собрать matcher запроса.
 
     ``path`` может содержать шаблонные сегменты ``{name}``: JJ разбирает их сам и
-    отдаёт значения в ``segments`` элемента истории.
+    отдаёт значения в ``segments`` элемента истории. Несколько путей — это
+    альтернативные формы одного маршрута: запрос подходит, если совпала любая.
     """
     jj = _import_jj()
-    return jj.match(
-        method=method,
-        path=path,
-        params={key: str(value) for key, value in (params or {}).items()} or None,
-        headers={key: str(value) for key, value in (headers or {}).items()} or None,
-    )
+    paths = [path] if isinstance(path, str) else list(path)
+    matchers = [
+        jj.match(
+            method=method,
+            path=item,
+            params={key: str(value) for key, value in (params or {}).items()} or None,
+            headers={key: str(value) for key, value in (headers or {}).items()} or None,
+        )
+        for item in paths
+    ]
+    return matchers[0] if len(matchers) == 1 else jj.match_any(matchers)
 
 
 def build_response(
