@@ -182,6 +182,9 @@ class SourceSpec:
     #: Префикс маршрута. ``None`` — взять тот, что диктует сам документ
     #: (``basePath`` в Swagger 2.0, пустая строка в OpenAPI 3.0).
     base_path: str | None = None
+    #: Префикс маршрута спецификации, который снимается до добавления ``base_path``.
+    #: Отображает маршруты сервиса на маршруты клиента за шлюзом. ``None`` — не снимать.
+    strip_prefix: str | None = None
     #: Принимает ли сервер маршруты операций источника и со слэшем на конце, и без
     #: него. Умолчание строгое; операция может переопределить значение.
     accept_trailing_slash: bool = False
@@ -191,7 +194,9 @@ class SourceSpec:
         where = f"sources.{name}"
         data = _require_mapping(data, where)
         _reject_unknown(
-            data, {"path", "root", "selection", "base_path", "accept_trailing_slash"}, where
+            data,
+            {"path", "root", "selection", "base_path", "strip_prefix", "accept_trailing_slash"},
+            where,
         )
         python_identifier(to_snake_case(name), context=f"имя источника {name!r}")
         raw_selection = data.get("selection", Selection.EXPLICIT.value)
@@ -206,8 +211,28 @@ class SourceSpec:
         if root is not None and not isinstance(root, str):
             raise ManifestError(f"{where}.root: ожидалась строка")
         base_path = data.get("base_path")
-        if base_path is not None and not isinstance(base_path, str):
-            raise ManifestError(f"{where}.base_path: ожидалась строка")
+        if base_path is not None:
+            if not isinstance(base_path, str):
+                raise ManifestError(f"{where}.base_path: ожидалась строка")
+            # Пустая строка допустима: она убирает префикс, который диктует документ.
+            if base_path and not base_path.startswith("/"):
+                raise ManifestError(
+                    f"{where}.base_path: префикс должен начинаться с '/', получено {base_path!r}"
+                )
+        strip_prefix = data.get("strip_prefix")
+        if strip_prefix is not None:
+            if not isinstance(strip_prefix, str):
+                raise ManifestError(f"{where}.strip_prefix: ожидалась строка")
+            if not strip_prefix.startswith("/"):
+                raise ManifestError(
+                    f"{where}.strip_prefix: префикс должен начинаться с '/', получено "
+                    f"{strip_prefix!r}"
+                )
+            if not strip_prefix.rstrip("/"):
+                raise ManifestError(
+                    f"{where}.strip_prefix: снимать корень '/' бессмысленно — "
+                    f"укажите префикс вида '/api/v1' или уберите настройку"
+                )
         accept_slash = data.get("accept_trailing_slash", False)
         if isinstance(accept_slash, dict):
             raise ManifestError(
@@ -222,6 +247,7 @@ class SourceSpec:
             root=root,
             selection=selection,
             base_path=base_path,
+            strip_prefix=strip_prefix,
             accept_trailing_slash=accept_slash,
         )
 
@@ -231,6 +257,8 @@ class SourceSpec:
             data["root"] = self.root
         if self.base_path is not None:
             data["base_path"] = self.base_path
+        if self.strip_prefix is not None:
+            data["strip_prefix"] = self.strip_prefix
         if self.accept_trailing_slash:
             data["accept_trailing_slash"] = True
         return data
