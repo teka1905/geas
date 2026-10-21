@@ -39,6 +39,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
 from ...errors import ContractMockError, RequestContractError
+from ...media import DEFAULT_TEXT_CHARSET, MediaKind, declared_charset, media_kind
 from ...models import Direction, ParameterLocation
 from ...runtime.operation import route_variants
 from ...runtime.validation import (
@@ -121,6 +122,7 @@ class ContractMock:
             content_type=self._variant.content_type,
         )
         self._check_status_and_content_type()
+        self._check_text_encoding()
 
     # ------------------------------------------------------------ подготовка
 
@@ -261,10 +263,16 @@ class ContractMock:
         try:
             variant = self._operation.response(status=status, content_type=content_type)
         except ResponseVariantError:
-            fallback = [item for item in self._operation.responses if item.status == "default"]
-            if not (fallback and isinstance(status, int)):
+            # ``default`` подменяет только статус, которого спецификация не объявляет
+            # вовсе. Объявленный статус (в том числе непроверяемый вариант вроде
+            # ``200: application/octet-stream``) чужой схемой ``default`` не мокается.
+            if not isinstance(status, int) or self._status_is_declared(status):
                 raise
-            variant = fallback[0]
+            if not any(item.status == "default" for item in self._operation.responses):
+                raise
+            # Выбор среди вариантов ``default`` идёт по тем же правилам, что и любой
+            # другой: content_type учитывается, неоднозначность — ошибка.
+            variant = self._operation.response(status="default", content_type=content_type)
             return variant, status
 
         if isinstance(variant.status, int):
@@ -276,6 +284,64 @@ class ContractMock:
             operation_key=self._operation.key,
         )
 
+    def _status_is_declared(self, status: int) -> bool:
+        """Объявлен ли статус спецификацией — проверяемым или непроверяемым вариантом."""
+        return any(item.status == status for item in self._operation.responses) or any(
+            item.status == status
+            for item in self._operation.unchecked
+            if item.direction is Direction.RESPONSE
+        )
+
+    def _served_content_type(self) -> str | None:
+        """Media type, по которому решается, как отдать тело: заголовок из
+        ``response_headers``, иначе тип варианта (``*/*`` — JSON).
+        """
+        override = {key.lower(): value for key, value in self._response_headers.items()}
+        supplied = override.get("content-type")
+        if supplied is not None:
+            return supplied.split(";", 1)[0].strip().lower()
+        return self._variant.content_type
+
+    def _serves_text(self) -> bool:
+        """Уходит ли тело строкой как есть (``text/*``), а не JSON-литералом."""
+        served = self._served_content_type()
+        return (
+            self._variant.json_schema is not None
+            and served is not None
+            and media_kind(served) is MediaKind.TEXT
+        )
+
+    def _check_text_encoding(self) -> None:
+        """Строковое тело ``text/*`` обязано кодироваться в ``charset`` ответа.
+
+        Иначе ошибка (неизвестный ``charset``, символ вне кодировки) вылетела бы из JJ
+        на входе в ``async with``, а не здесь — до регистрации мока.
+        """
+        if not self._serves_text():
+            return
+        if not isinstance(self._body, str):
+            raise ContractMockError(
+                f"ответ с Content-Type {self._served_content_type()!r} отдаётся строкой как "
+                f"есть, а передано {type(self._body).__name__}",
+                operation_key=self._operation.key,
+            )
+        override = {key.lower(): value for key, value in self._response_headers.items()}
+        header = override.get("content-type")
+        charset = (declared_charset(header) if header else None) or DEFAULT_TEXT_CHARSET
+        try:
+            self._body.encode(charset)
+        except LookupError:
+            raise ContractMockError(
+                f"неизвестный charset {charset!r} в Content-Type ответа {header!r}",
+                operation_key=self._operation.key,
+            ) from None
+        except UnicodeEncodeError as error:
+            raise ContractMockError(
+                f"тело ответа не кодируется в {charset}: {error}. Укажите подходящий charset "
+                f"в response_headers['Content-Type'] или уберите его — по умолчанию utf-8",
+                operation_key=self._operation.key,
+            ) from None
+
     def _check_status_and_content_type(self) -> None:
         if not 100 <= self._status <= 599:
             raise ContractMockError(
@@ -285,11 +351,20 @@ class ContractMock:
         declared = self._variant.content_type
         override = {key.lower(): value for key, value in self._response_headers.items()}
         supplied = override.get("content-type")
-        if (
-            supplied is not None
-            and declared is not None
-            and supplied.split(";", 1)[0].strip().lower() != declared
-        ):
+        if supplied is None or declared is None:
+            return
+        canonical = supplied.split(";", 1)[0].strip().lower()
+        if declared == "*/*":
+            # ``*/*`` описан JSON-схемой: отдать его можно JSON или текстом, но не
+            # бинарным телом, которое мок не умеет собрать из значения.
+            if media_kind(canonical) is MediaKind.OTHER:
+                raise ContractMockError(
+                    f"вариант */* описан JSON-схемой: отдать его можно как JSON или text/*, "
+                    f"а в заголовке {supplied!r}",
+                    operation_key=self._operation.key,
+                )
+            return
+        if canonical != declared:
             raise ContractMockError(
                 f"content type ответа не совпадает с контрактом: заголовок "
                 f"{supplied!r}, контракт {declared!r}",
@@ -331,8 +406,11 @@ class ContractMock:
             )
         self._entered = True
         headers = dict(self._response_headers)
-        if self._variant.content_type and not any(key.lower() == "content-type" for key in headers):
-            headers["Content-Type"] = self._variant.content_type
+        declared = self._variant.content_type
+        has_content_type = any(key.lower() == "content-type" for key in headers)
+        # ``*/*`` — это «любой тип», а не заголовок: ответ с JSON-телом JJ подпишет сам.
+        if declared and declared != "*/*" and not has_content_type:
+            headers["Content-Type"] = declared
         matcher = backend.build_matcher(
             method=self._operation.method,
             path=self._matched_paths(),
@@ -343,6 +421,7 @@ class ContractMock:
             status=self._status,
             body=self._body,
             has_body=self._variant.json_schema is not None,
+            as_text=self._serves_text(),
             headers=headers,
         )
         self._mocked = backend.create_mocked(matcher, response)
@@ -431,6 +510,11 @@ class ContractMock:
     def status(self) -> int:
         """HTTP-статус, которым отвечает мок."""
         return self._status
+
+    @property
+    def variant(self) -> ResponseView:
+        """Вариант ответа контракта, которым отвечает мок."""
+        return self._variant
 
     @property
     def diagnostics(self) -> tuple[BaseException, ...]:

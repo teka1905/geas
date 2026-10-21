@@ -586,6 +586,9 @@ def test_multiple_content_types_are_kept_apart(tmp_path: Path) -> None:
         "response 200:application/pdf: media type 'application/pdf' не является "
         "JSON-совместимым, структурный контракт тела для него не строится",
     )
+    assert [(item.direction.value, item.status, item.content_type) for item in built.unchecked] == [
+        ("response", 200, "application/pdf")
+    ]
 
 
 # --------------------------------------------------- position-awareness

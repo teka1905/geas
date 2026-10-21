@@ -19,7 +19,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from ..errors import (
     MissingExtraError,
@@ -27,7 +27,15 @@ from ..errors import (
     RequestContractError,
     ResponseVariantError,
 )
-from ..models import Direction, ParameterLocation
+from ..media import (
+    DEFAULT_TEXT_CHARSET,
+    MediaKind,
+    declared_charset,
+    media_kind,
+    media_priority,
+    media_range_specificity,
+)
+from ..models import Direction, ParameterLocation, UncheckedVariant
 from .description import DEFAULT_MAX_DEPTH, describe_contract, describe_parameters
 from .validation import decode_parameter, validate_instance, wire_text
 
@@ -209,6 +217,32 @@ class ResponseView:
         )
 
 
+_Variant = TypeVar("_Variant", "RequestBodyView", "ResponseView")
+
+
+def _one_schema_variant(variants: Sequence[_Variant]) -> _Variant | None:
+    """Главный из JSON-вариантов, описанных одной и той же схемой; иначе ``None``.
+
+    ``application/json`` и ``text/json`` (умолчание Swashbuckle) или ``application/json``
+    и ``*/*`` с одной схемой — это один вариант в двух написаниях: тело проверяется и
+    разбирается клиентом одинаково, поэтому выбор главного
+    (:func:`~geas.media.media_priority`) не «молча первый». Варианты с разными схемами
+    так не выбираются никогда, как и текстовые: ``text/plain`` и ``text/html`` или
+    JSON-строка и текст уходят на провод по-разному.
+    """
+    if len(variants) < 2:
+        return None
+    first = variants[0].json_schema
+    if first is None:
+        return None
+    for item in variants:
+        if item.content_type is None or item.json_schema != first:
+            return None
+        if media_kind(item.content_type) is not MediaKind.JSON:
+            return None
+    return min(variants, key=lambda item: media_priority(item.content_type or ""))
+
+
 def _contract_path(contract_file: Path | None, json_pointer: str | None) -> str | None:
     """Адрес схемы: путь к файлу контракта и JSON Pointer внутри него."""
     if contract_file is None:
@@ -241,6 +275,8 @@ class RequestView:
     #: Места, у которых есть параметры, в порядке path → query → header → cookie.
     #: Если не переданы, собираются из параметров — без координат d42.
     parameter_sets: tuple[ParameterSetView, ...] = ()
+    #: Тела запроса, которые спецификация объявила, а контракт не проверяет.
+    unchecked_bodies: tuple[UncheckedVariant, ...] = ()
 
     def __post_init__(self) -> None:
         by_location = {
@@ -297,19 +333,63 @@ class RequestView:
         if content_type is None:
             if len(self.bodies) == 1:
                 return self.bodies[0]
+            same = _one_schema_variant(self.bodies)
+            if same is not None:
+                return same
             if not self.bodies:
+                if self.unchecked_bodies:
+                    raise ResponseVariantError(
+                        "у операции нет проверяемого тела запроса" + self._unchecked_note()
+                    )
                 raise ResponseVariantError("у операции нет тела запроса")
             available = sorted(item.content_type for item in self.bodies)
             raise ResponseVariantError(
                 f"у операции несколько тел запроса ({available}); укажите content_type явно"
+                + self._unchecked_note()
             )
-        for item in self.bodies:
-            if item.content_type == content_type:
-                return item
         available = sorted(item.content_type for item in self.bodies)
+        match = self.match(content_type)
+        if isinstance(match, RequestBodyView):
+            return match
+        if match is not None:
+            raise ResponseVariantError(
+                f"тело запроса {content_type!r} объявлено спецификацией "
+                f"({match.content_type}), но не проверяется: {match.reason}; проверяемые "
+                f"тела: {available or 'нет'}"
+            )
         raise ResponseVariantError(
             f"тела запроса с content type {content_type!r} нет; доступны {available}"
+            + self._unchecked_note()
         )
+
+    def match(self, content_type: str) -> RequestBodyView | UncheckedVariant | None:
+        """Объявленное тело, которое покрывает content type, или ``None``.
+
+        Спецификация может объявить диапазон (``*/*``, ``image/*``), а клиент шлёт
+        конкретный тип. Побеждает самое точное совпадение: тип целиком, затем
+        ``type/*``, затем ``*/*``. Непроверяемое тело возвращается как
+        :class:`~geas.models.UncheckedVariant`.
+        """
+        best: RequestBodyView | UncheckedVariant | None = None
+        best_score = -1
+        candidates: list[RequestBodyView | UncheckedVariant] = [
+            *self.bodies,
+            *self.unchecked_bodies,
+        ]
+        for item in candidates:
+            score = media_range_specificity(item.content_type, content_type)
+            if score is not None and score > best_score:
+                best, best_score = item, score
+        return best
+
+    def _unchecked_note(self) -> str:
+        """Хвост сообщения о телах, которые объявлены, но не проверяются."""
+        if not self.unchecked_bodies:
+            return ""
+        declared = ", ".join(
+            f"{item.content_type} ({item.reason})" for item in self.unchecked_bodies
+        )
+        return f"; объявлено без проверки: {declared}"
 
 
 class OperationHandle:
@@ -328,6 +408,7 @@ class OperationHandle:
         "_request",
         "_responses",
         "_source",
+        "_unchecked",
         "_unsupported",
     )
 
@@ -343,6 +424,7 @@ class OperationHandle:
         request: RequestView,
         responses: tuple[ResponseView, ...],
         unsupported: tuple[str, ...] = (),
+        unchecked: tuple[UncheckedVariant, ...] = (),
         d42_modules: Mapping[str, str | None] | None = None,
         d42_reason: str | None = None,
         d42_reasons: Mapping[str, str | None] | None = None,
@@ -358,6 +440,7 @@ class OperationHandle:
         self._request = request
         self._responses = responses
         self._unsupported = unsupported
+        self._unchecked = unchecked
         self._d42_modules = dict(d42_modules or {})
         self._d42_reason = d42_reason
         self._d42_reasons = dict(d42_reasons or {})
@@ -416,8 +499,16 @@ class OperationHandle:
 
     @property
     def unsupported(self) -> tuple[str, ...]:
-        """Варианты, которые не представимы контрактом, с причинами."""
+        """Причины строками: тела, которые объявлены, но не проверяются, и отказы d42.
+
+        Структурно непроверяемые тела — в :attr:`unchecked`.
+        """
         return self._unsupported
+
+    @property
+    def unchecked(self) -> tuple[UncheckedVariant, ...]:
+        """Тела, которые спецификация объявила, а контракт не проверяет, структурно."""
+        return self._unchecked
 
     def __repr__(self) -> str:
         return f"OperationHandle({self._key!r}, {self._method} {self._path})"
@@ -440,18 +531,46 @@ class OperationHandle:
         ]
         if len(candidates) == 1:
             return candidates[0]
+        if len({item.status for item in candidates}) == 1:
+            same = _one_schema_variant(candidates)
+            if same is not None:
+                return same
         available = sorted(item.label() for item in self._responses)
         if not candidates:
+            declared = [
+                item
+                for item in self._unchecked
+                if item.direction is Direction.RESPONSE
+                and (status is None or item.status == status)
+                and (content_type is None or item.content_type == content_type)
+            ]
+            if declared:
+                raise ResponseVariantError(
+                    f"вариант ответа {status if status is not None else '*'}:"
+                    f"{content_type or '*'} объявлен спецификацией, но не проверяется: "
+                    + "; ".join(f"{item.label()} — {item.reason}" for item in declared)
+                    + f". Проверяемые варианты: {available or 'нет'}",
+                    operation_key=self._key,
+                )
             raise ResponseVariantError(
                 f"у операции нет варианта ответа "
                 f"{status if status is not None else '*'}:{content_type or '*'}; "
-                f"доступны {available}",
+                f"доступны {available}" + self._unchecked_responses_note(),
                 operation_key=self._key,
             )
         raise ResponseVariantError(
             f"вариант ответа не выбран однозначно: подходят "
             f"{sorted(i.label() for i in candidates)}. Укажите status и content_type явно",
             operation_key=self._key,
+        )
+
+    def _unchecked_responses_note(self) -> str:
+        """Хвост сообщения об ответах, которые объявлены, но не проверяются."""
+        declared = [item for item in self._unchecked if item.direction is Direction.RESPONSE]
+        if not declared:
+            return ""
+        return "; объявлено без проверки: " + ", ".join(
+            f"{item.status}:{item.content_type} ({item.reason})" for item in declared
         )
 
     # ------------------------------------------------------------ описание
@@ -506,12 +625,14 @@ class OperationHandle:
                 f"вариант ответа {variant.label()} требует тело, но передан None",
                 operation_key=self._key,
             )
+        part = f"тело ответа {variant.label()}"
+        self._require_text_value(variant.content_type, body, Direction.RESPONSE, part)
         validate_instance(
             dict(variant.json_schema),
             body,
             operation_key=self._key,
             direction=Direction.RESPONSE,
-            part=f"тело ответа {variant.label()}",
+            part=part,
         )
         self._validate_with_d42(body, export=variant.d42_export, direction=Direction.RESPONSE)
         return variant
@@ -519,14 +640,38 @@ class OperationHandle:
     def validate_request_body(self, body: Any, *, content_type: str | None = None) -> None:
         """Проверить тело запроса по контракту."""
         view = self._request.body(content_type)
+        part = f"тело запроса {view.content_type}"
+        self._require_text_value(view.content_type, body, Direction.REQUEST, part)
         validate_instance(
             dict(view.json_schema),
             body,
             operation_key=self._key,
             direction=Direction.REQUEST,
-            part=f"тело запроса {view.content_type}",
+            part=part,
         )
         self._validate_with_d42(body, export=view.d42_export, direction=Direction.REQUEST)
+
+    def _require_text_value(
+        self,
+        content_type: str | None,
+        value: Any,
+        direction: Direction,
+        part: str,
+        request_index: int | None = None,
+    ) -> None:
+        """Тело ``text/*`` — всегда строка, даже если схема его не сужает (``allow_any``)."""
+        if content_type is None or media_kind(content_type) is not MediaKind.TEXT:
+            return
+        if isinstance(value, str):
+            return
+        validate_instance(
+            {"type": "string"},
+            value,
+            operation_key=self._key,
+            direction=direction,
+            part=part,
+            request_index=request_index,
+        )
 
     def validate_recorded_request(
         self,
@@ -749,33 +894,47 @@ class OperationHandle:
         raw_body: bytes | None,
         index: int,
     ) -> None:
-        content_type = None
+        content_type_header = None
         for name, value in headers:
             if name.lower() == "content-type":
-                content_type = value.split(";", 1)[0].strip().lower()
+                content_type_header = value
                 break
+        content_type = (
+            None
+            if content_type_header is None
+            else content_type_header.split(";", 1)[0].strip().lower()
+        )
 
-        if not self._request.bodies:
+        unchecked = self._request.unchecked_bodies
+        if not self._request.bodies and not unchecked:
             return
 
-        required = any(item.required for item in self._request.bodies)
+        required = any(item.required for item in self._request.bodies) or any(
+            item.required for item in unchecked
+        )
         payload = body if body not in (None, b"", "") else None
         if payload is None and raw_body:
             payload = raw_body
         if payload is None:
             if required:
+                declared = sorted(
+                    [i.content_type for i in self._request.bodies]
+                    + [i.content_type for i in unchecked]
+                )
                 raise RequestContractError(
                     "тело запроса обязательно, но запрос пришёл без тела",
                     request_index=index,
                     operation_key=self._key,
                     json_pointer="/body",
-                    expected=f"тело {sorted(i.content_type for i in self._request.bodies)}",
+                    expected=f"тело {declared}",
                     actual="пусто",
                 )
             return
 
         if content_type is None:
-            available = sorted(item.content_type for item in self._request.bodies)
+            available = sorted(
+                [i.content_type for i in self._request.bodies] + [i.content_type for i in unchecked]
+            )
             raise RequestContractError(
                 "у запроса с телом нет заголовка Content-Type",
                 request_index=index,
@@ -784,19 +943,40 @@ class OperationHandle:
                 expected=f"один из {available}",
                 actual="отсутствует",
             )
-        try:
-            view = self._request.body(content_type)
-        except ResponseVariantError as exc:
+        match = self._request.match(content_type)
+        if match is None:
+            declared = sorted(
+                [i.content_type for i in self._request.bodies] + [i.content_type for i in unchecked]
+            )
             raise RequestContractError(
                 "content type запроса не описан контрактом",
                 request_index=index,
                 operation_key=self._key,
                 json_pointer="/header/Content-Type",
-                expected=str(exc.base_message),
+                expected=f"один из {declared}"
+                + (
+                    f"; из них не проверяются: {sorted(i.content_type for i in unchecked)}"
+                    if unchecked
+                    else ""
+                ),
                 actual=content_type,
-            ) from exc
+            )
+        if isinstance(match, UncheckedVariant):
+            # Тело объявлено спецификацией, но контракта у него нет: признать его
+            # дефектом нельзя, а проверить нечем (см. ``operation.unchecked``).
+            return
+        view = match
+        # Объявлен диапазон (``*/*``) — тело разбирается по фактическому типу запроса.
+        kind = media_kind(content_type)
+        if kind is MediaKind.OTHER:
+            # ``*/*`` покрывает и бинарное тело, но разобрать его для проверки нечем.
+            return
 
-        if isinstance(payload, (bytes, bytearray)):
+        if kind is MediaKind.TEXT:
+            payload = self._decode_text_body(
+                payload, raw_body, content_type_header or content_type, index
+            )
+        elif isinstance(payload, (bytes, bytearray)):
             try:
                 payload = json.loads(payload.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -830,6 +1010,49 @@ class OperationHandle:
             request_index=index,
         )
         self._validate_with_d42(payload, export=view.d42_export, direction=Direction.REQUEST)
+
+    def _decode_text_body(
+        self, payload: Any, raw_body: bytes | None, content_type_header: str, index: int
+    ) -> str:
+        """Текст тела запроса: байты декодируются по ``charset`` из ``Content-Type``.
+
+        Предпочитаются исходные байты: JJ сам декодирует только ``text/plain`` и всегда
+        как UTF-8, а ``charset=windows-1251`` в заголовке — обычное дело. Нет ``charset``
+        — UTF-8.
+        """
+        charset = declared_charset(content_type_header) or DEFAULT_TEXT_CHARSET
+        data = raw_body if isinstance(raw_body, (bytes, bytearray)) and raw_body else payload
+        if isinstance(data, str):
+            return data
+        if not isinstance(data, (bytes, bytearray)):
+            raise RequestContractError(
+                "тело запроса с текстовым content type не является текстом",
+                request_index=index,
+                operation_key=self._key,
+                json_pointer="/body",
+                expected="строка",
+                actual=type(data).__name__,
+            )
+        try:
+            return bytes(data).decode(charset)
+        except LookupError as exc:
+            raise RequestContractError(
+                f"неизвестный charset {charset!r} в Content-Type",
+                request_index=index,
+                operation_key=self._key,
+                json_pointer="/header/Content-Type",
+                expected="известная Python кодировка",
+                actual=content_type_header,
+            ) from exc
+        except UnicodeDecodeError as exc:
+            raise RequestContractError(
+                f"тело запроса не декодируется как {charset}: {exc}",
+                request_index=index,
+                operation_key=self._key,
+                json_pointer="/body",
+                expected=f"текст в кодировке {charset}",
+                actual=repr(bytes(data[:200])),
+            ) from exc
 
     # --------------------------------------------------- опциональные extras
 
@@ -908,13 +1131,21 @@ class OperationHandle:
 
     def _missing_body(self, direction: Direction) -> str | None:
         """Сообщение, если d42-схемы тела нет потому, что тела нет в контракте."""
+        declared = [
+            f"{item.label()} — {item.reason}"
+            for item in self._unchecked
+            if item.direction is direction
+        ]
+        note = f" (объявлено без проверки: {'; '.join(declared)})" if declared else ""
         if direction is Direction.RESPONSE:
             if any(item.json_schema is not None for item in self._responses):
                 return None
-            return f"у операции {self._key!r} нет ответа с телом, поэтому нет и его d42-схемы"
+            what = "проверяемого ответа" if declared else "ответа"
+            return f"у операции {self._key!r} нет {what} с телом{note}, поэтому нет и его d42-схемы"
         if self._request.bodies:
             return None
-        message = f"у операции {self._key!r} нет тела запроса, поэтому нет и его d42-схемы"
+        what = "проверяемого тела" if declared else "тела"
+        message = f"у операции {self._key!r} нет {what} запроса{note}, поэтому нет и его d42-схемы"
         places = [item.location.value for item in self._request.parameter_sets]
         if places:
             message += (

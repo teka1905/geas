@@ -1,0 +1,743 @@
+# Текстовые тела: text/plain и text/html как строка, а не JSON.
+#
+# Операции проверяются по одной или небольшими наборами:
+#   textPreview         — запрос и ответ text/plain с ограничениями строки;
+#   compilePattern      — ответ text/plain по $ref на именованную строку с pattern;
+#   renderFragment      — ответ text/html;charset=UTF-8;
+#   jsonOrText          — один статус в application/json (объект) и text/plain (строка);
+#   objectAsText        — text/plain со схемой object без JSON-близнеца;
+#   nullableText        — text/plain со строкой nullable;
+#   uploadAttachment    — multipart/form-data в запросе и octet-stream в ответе:
+#                         тело объявлено, но не проверяется;
+#   mixedBodies         — JSON и multipart в одном запросе;
+#   anyContent          — */* для JSON-ответа;
+#   swashbuckleDefaults — text/plain, application/json и text/json с одним $ref на
+#                         объект (умолчание Swashbuckle): text/plain — артефакт генератора;
+#   xmlAndJson          — application/json и text/xml с одной схемой объекта;
+#   textDefault         — default в application/json и text/plain;
+#   anyRequest          — тело запроса */* со схемой объекта;
+#   imageUpload         — тело запроса image/*;
+#   stringCompositions  — allOf и oneOf из строк под text/plain;
+#   anyText             — text/plain без ограничений (нужен waiver allow_any);
+#   downloadWithDefault — 200 в application/octet-stream и default в JSON;
+#   jsonAndWildcard     — application/json и */* с одной схемой;
+#   wildcardDiffers     — тело запроса application/json и */* с разными схемами;
+#   suffixCollision     — application/json и два JSON-типа с одним суффиксом d42-имени;
+#   events              — text/event-stream со схемой массива (springdoc SSE);
+#   anyTextRef          — text/plain: anyOf из строки и $ref на схему без ограничений;
+#   swashbuckleRequest  — тело запроса в application/json, text/json и text/plain с одним $ref;
+#   problemAndWildcard  — application/problem+json и */* с одной схемой;
+#   csvReport           — text/csv со схемой массива (springdoc для List<Dto>);
+#   mixedComposition    — text/plain: oneOf из строки и объекта;
+#   twoStatuses         — 200 и 201 с одной JSON-схемой;
+#   stringTwice         — строка под application/json и под text/plain;
+#   shortCode           — тело запроса text/plain не длиннее одного символа;
+#   brokenTextRef       — text/plain: $ref с соседним maxLength рядом с JSON-объектом;
+#   missingTextRef      — text/plain: $ref на несуществующую схему;
+#   downloadAny         — */* со схемой type: string, format: binary (выгрузка springdoc);
+#   anyJson             — application/json без ограничений (waiver allow_any);
+#   htmlAndPlain        — text/plain и text/html с одной схемой объекта;
+#   untypedArray        — text/plain: items без type;
+#   nullableWithFormat  — text/plain: nullable-строка с неизвестным format;
+#   twoStringProblems   — text/plain: allOf из схемы без ограничений и строки с неизвестным format;
+#   wildcardDirty       — */* со схемой объекта, поле которого без схемы (springdoc);
+#   objectWithAnyField  — text/plain со схемой объекта, поле которого без схемы;
+#   leakyComposition    — ответ: JSON и text/plain anyOf из строки и объекта, невыразимого в d42;
+#   leakyRequest        — то же для тела запроса;
+#   createdAsText       — 200 в application/json и 201 в text/plain.
+openapi: "3.0.3"
+
+info:
+  title: Text bodies fixture
+  version: "1.0.0"
+
+paths:
+  /pattern/textPreview:
+    post:
+      operationId: textPreview
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+              minLength: 1
+              maxLength: 40
+      responses:
+        "200":
+          description: Превью сообщения
+          content:
+            text/plain:
+              schema:
+                type: string
+                maxLength: 200
+
+  /pattern/{patternId}/compile:
+    get:
+      operationId: compilePattern
+      parameters:
+        - name: patternId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Скомпилированный шаблон
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/CompiledPattern"
+
+  /fragments/{fragmentId}:
+    get:
+      operationId: renderFragment
+      parameters:
+        - name: fragmentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: HTML-фрагмент
+          content:
+            text/html;charset=UTF-8:
+              schema:
+                type: string
+                minLength: 1
+
+  /messages/preview:
+    get:
+      operationId: jsonOrText
+      responses:
+        "200":
+          description: Одно и то же двумя способами
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [text]
+                properties:
+                  text:
+                    type: string
+            text/plain:
+              schema:
+                type: string
+
+  /broken/object:
+    post:
+      operationId: objectAsText
+      requestBody:
+        content:
+          text/plain:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        "204":
+          description: Принято
+
+  /broken/nullable:
+    get:
+      operationId: nullableText
+      responses:
+        "200":
+          description: Строка или null
+          content:
+            text/plain:
+              schema:
+                type: string
+                nullable: true
+
+  /attachments:
+    post:
+      operationId: uploadAttachment
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Вложение
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+
+  /mixed:
+    post:
+      operationId: mixedBodies
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "204":
+          description: Принято
+
+  /communications/myself:
+    get:
+      operationId: anyContent
+      responses:
+        "200":
+          description: Текущий пользователь
+          content:
+            "*/*":
+              schema:
+                type: object
+                required: [login]
+                properties:
+                  login:
+                    type: string
+
+  /swashbuckle/profile:
+    get:
+      operationId: swashbuckleDefaults
+      responses:
+        "200":
+          description: Профиль
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/Profile"
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+            text/json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+
+  /xml/profile:
+    get:
+      operationId: xmlAndJson
+      responses:
+        "200":
+          description: Профиль в JSON и XML
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+            text/xml:
+              schema:
+                $ref: "#/components/schemas/Profile"
+
+  /text/default:
+    get:
+      operationId: textDefault
+      responses:
+        "200":
+          description: Текст
+          content:
+            text/plain:
+              schema:
+                type: string
+        default:
+          description: Ошибка двумя способами
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+            text/plain:
+              schema:
+                type: string
+                maxLength: 3
+
+  /any/request:
+    post:
+      operationId: anyRequest
+      requestBody:
+        required: true
+        content:
+          "*/*":
+            schema:
+              $ref: "#/components/schemas/Profile"
+      responses:
+        "204":
+          description: Принято
+
+  /images:
+    post:
+      operationId: imageUpload
+      requestBody:
+        required: true
+        content:
+          image/*:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "204":
+          description: Принято
+
+  /strings/composed:
+    get:
+      operationId: stringCompositions
+      responses:
+        "200":
+          description: allOf из строк
+          content:
+            text/plain:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CompiledPattern"
+                  - type: string
+                    maxLength: 3
+        "201":
+          description: oneOf из строк
+          content:
+            text/plain:
+              schema:
+                oneOf:
+                  - type: string
+                    enum: [draft]
+                  - type: string
+                    enum: [final]
+
+  /any/text:
+    get:
+      operationId: anyText
+      responses:
+        "200":
+          description: Любой текст
+          content:
+            text/plain:
+              schema: {}
+
+  /downloads/{downloadId}:
+    get:
+      operationId: downloadWithDefault
+      parameters:
+        - name: downloadId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Файл
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        default:
+          description: Ошибка
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+
+  /json-and-wildcard:
+    get:
+      operationId: jsonAndWildcard
+      responses:
+        "200":
+          description: Одна схема двумя типами
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+            "*/*":
+              schema:
+                $ref: "#/components/schemas/Profile"
+
+  /wildcard-differs:
+    post:
+      operationId: wildcardDiffers
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [a]
+              properties:
+                a:
+                  type: string
+          "*/*":
+            schema:
+              type: object
+              required: [b]
+              properties:
+                b:
+                  type: string
+      responses:
+        "204":
+          description: Принято
+
+  /suffix-collision:
+    post:
+      operationId: suffixCollision
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                c:
+                  type: string
+          application/vnd.a+json:
+            schema:
+              type: object
+              properties:
+                a:
+                  type: string
+          application/vnd-a+json:
+            schema:
+              type: object
+              properties:
+                b:
+                  type: string
+      responses:
+        "204":
+          description: Принято
+
+  /events:
+    get:
+      operationId: events
+      responses:
+        "200":
+          description: Поток событий
+          content:
+            text/event-stream:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Profile"
+
+  /any/text-ref:
+    get:
+      operationId: anyTextRef
+      responses:
+        "200":
+          description: Короткий код или любой текст
+          content:
+            text/plain:
+              schema:
+                anyOf:
+                  - type: string
+                    maxLength: 3
+                  - $ref: "#/components/schemas/FreeText"
+
+  /swashbuckle/profile/update:
+    put:
+      operationId: swashbuckleRequest
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Profile"
+          text/json:
+            schema:
+              $ref: "#/components/schemas/Profile"
+          text/plain:
+            schema:
+              $ref: "#/components/schemas/Profile"
+      responses:
+        "204":
+          description: Обновлено
+
+  /problem-and-wildcard:
+    get:
+      operationId: problemAndWildcard
+      responses:
+        "200":
+          description: Одна схема двумя JSON-типами
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+            "*/*":
+              schema:
+                $ref: "#/components/schemas/Profile"
+
+  /reports/csv:
+    get:
+      operationId: csvReport
+      responses:
+        "200":
+          description: Отчёт
+          content:
+            text/csv:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Profile"
+
+  /mixed-composition:
+    get:
+      operationId: mixedComposition
+      responses:
+        "200":
+          description: Строка или объект
+          content:
+            text/plain:
+              schema:
+                oneOf:
+                  - type: string
+                  - $ref: "#/components/schemas/Profile"
+
+  /two-statuses:
+    post:
+      operationId: twoStatuses
+      responses:
+        "200":
+          description: Уже есть
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+        "201":
+          description: Создан
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+
+  /string-twice:
+    get:
+      operationId: stringTwice
+      responses:
+        "200":
+          description: Строка JSON-литералом и текстом
+          content:
+            application/json:
+              schema:
+                type: string
+            text/plain:
+              schema:
+                type: string
+
+  /short-code:
+    post:
+      operationId: shortCode
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+              maxLength: 1
+      responses:
+        "204":
+          description: Принято
+
+  /broken/text-ref:
+    get:
+      operationId: brokenTextRef
+      responses:
+        "200":
+          description: Объект или текст по сломанной ссылке
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/CompiledPattern"
+                maxLength: 3
+
+  /broken/missing-ref:
+    get:
+      operationId: missingTextRef
+      responses:
+        "200":
+          description: Текст по несуществующей ссылке
+          content:
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/Nope"
+
+  /downloads/any:
+    get:
+      operationId: downloadAny
+      responses:
+        "200":
+          description: Файл
+          content:
+            "*/*":
+              schema:
+                type: string
+                format: binary
+
+  /any/json:
+    get:
+      operationId: anyJson
+      responses:
+        "200":
+          description: Любой JSON
+          content:
+            application/json:
+              schema: {}
+
+  /html-and-plain:
+    get:
+      operationId: htmlAndPlain
+      responses:
+        "200":
+          description: Объект под двумя текстовыми типами
+          content:
+            text/html:
+              schema:
+                $ref: "#/components/schemas/Profile"
+            text/plain:
+              schema:
+                $ref: "#/components/schemas/Profile"
+
+  /untyped-array:
+    get:
+      operationId: untypedArray
+      responses:
+        "200":
+          description: Массив без type
+          content:
+            text/plain:
+              schema:
+                items:
+                  type: string
+
+  /nullable-with-format:
+    get:
+      operationId: nullableWithFormat
+      responses:
+        "200":
+          description: Nullable-строка с неизвестным format
+          content:
+            text/plain:
+              schema:
+                type: string
+                format: my-format
+                nullable: true
+
+  /two-string-problems:
+    get:
+      operationId: twoStringProblems
+      responses:
+        "200":
+          description: Две проблемы в одной строке
+          content:
+            text/plain:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/FreeText"
+                  - type: string
+                    format: my-format
+
+  /wildcard/dirty:
+    get:
+      operationId: wildcardDirty
+      responses:
+        "200":
+          description: Объект с полем без схемы
+          content:
+            "*/*":
+              schema:
+                type: object
+                properties:
+                  payload: {}
+
+  /object-with-any-field:
+    get:
+      operationId: objectWithAnyField
+      responses:
+        "200":
+          description: Объект под text/plain
+          content:
+            text/plain:
+              schema:
+                type: object
+                properties:
+                  payload: {}
+
+  /leaky/response:
+    get:
+      operationId: leakyComposition
+      responses:
+        "200":
+          description: Профиль или текст
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+            text/plain:
+              schema:
+                anyOf:
+                  - type: string
+                  - $ref: "#/components/schemas/Leaky"
+
+  /leaky/request:
+    post:
+      operationId: leakyRequest
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Profile"
+          text/plain:
+            schema:
+              anyOf:
+                - type: string
+                - $ref: "#/components/schemas/Leaky"
+      responses:
+        "204":
+          description: Принято
+
+  /created-as-text:
+    post:
+      operationId: createdAsText
+      responses:
+        "200":
+          description: Уже есть
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Profile"
+        "201":
+          description: Создан, в ответе идентификатор
+          content:
+            text/plain:
+              schema:
+                type: string
+
+components:
+  schemas:
+    Leaky:
+      type: object
+      properties:
+        code:
+          type: string
+          pattern: "^[A-Z]+$"
+          maxLength: 8
+    FreeText: {}
+    Profile:
+      type: object
+      required: [login]
+      properties:
+        login:
+          type: string
+    CompiledPattern:
+      type: string
+      pattern: "^[^<]*$"

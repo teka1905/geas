@@ -199,7 +199,7 @@ def test_list_reports_unsupported_variants(tmp_path: Path) -> None:
     machine = project.cli("list", "--json")
 
     assert human.returncode == 0, human.stderr
-    assert "не поддержано: response 200:application/pdf" in human.stdout
+    assert "объявлено, но не проверяется: response 200:application/pdf" in human.stdout
     (source,) = json.loads(machine.stdout)["sources"]
     (operation,) = source["operations"]
     assert operation["responses"] == ["200:application/json"]
@@ -570,7 +570,7 @@ def test_update_reports_unsupported_variants(tmp_path: Path) -> None:
     result = project.cli("update")
 
     assert result.returncode == 0, result.stderr
-    assert "multi.replaceContent: не поддержано" in result.stdout
+    assert "multi.replaceContent: объявлено, но не проверяется" in result.stdout
     assert "application/pdf" in result.stdout
 
 

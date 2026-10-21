@@ -32,6 +32,10 @@ __all__ = [
 #: Ключи документа контракта, не влияющие на семантику.
 _NON_SEMANTIC_KEYS = frozenset({"artifact", "slug", "dialect", "d42"})
 
+#: Ключи, которых не было в документах прежних версий. Их появление целиком — это
+#: миграция формата, а не изменение контракта; дальнейшие правки внутри — семантика.
+_ADDED_IN_LATER_VERSIONS = frozenset({"unchecked"})
+
 
 class ChangeKind(str, Enum):
     """Вид изменения."""
@@ -93,8 +97,16 @@ class ContractDiff:
 
 
 def semantic_view(document: Mapping[str, Any]) -> dict[str, Any]:
-    """Оставить от документа только то, что влияет на контракт."""
-    return {key: value for key, value in document.items() if key not in _NON_SEMANTIC_KEYS}
+    """Оставить от документа только то, что влияет на контракт.
+
+    Пустой ключ более поздней версии формата пропускается: отпечаток операции без
+    непроверяемых тел не меняется от того, что в документе появился ``unchecked: []``.
+    """
+    return {
+        key: value
+        for key, value in document.items()
+        if key not in _NON_SEMANTIC_KEYS and not (key in _ADDED_IN_LATER_VERSIONS and not value)
+    }
 
 
 def semantic_fingerprint(document: Mapping[str, Any]) -> str:
@@ -109,7 +121,8 @@ def diff_documents(before: Mapping[str, Any], after: Mapping[str, Any], key: str
     cosmetic: list[Change] = []
     for change in changes:
         root = change.pointer.split("/")[1] if "/" in change.pointer else ""
-        (cosmetic if root in _NON_SEMANTIC_KEYS else semantic).append(change)
+        migrated = root in _ADDED_IN_LATER_VERSIONS and root not in before
+        (cosmetic if root in _NON_SEMANTIC_KEYS or migrated else semantic).append(change)
     return OperationDiff(key=key, semantic=tuple(semantic), cosmetic=tuple(cosmetic))
 
 

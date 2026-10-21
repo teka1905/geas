@@ -1,0 +1,373 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "Text bodies, Swagger 2.0",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/pattern/textPreview": {
+      "post": {
+        "operationId": "textPreview",
+        "consumes": [
+          "text/plain"
+        ],
+        "produces": [
+          "text/plain"
+        ],
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Превью",
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            }
+          }
+        }
+      }
+    },
+    "/communications/myself": {
+      "get": {
+        "operationId": "anyContent",
+        "produces": [
+          "*/*"
+        ],
+        "responses": {
+          "200": {
+            "description": "Текущий пользователь",
+            "schema": {
+              "type": "object",
+              "required": [
+                "login"
+              ],
+              "properties": {
+                "login": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/both": {
+      "get": {
+        "operationId": "jsonAndText",
+        "produces": [
+          "application/json",
+          "text/plain"
+        ],
+        "responses": {
+          "200": {
+            "description": "Схема объекта, а text/plain в produces лишний",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/two-json": {
+      "get": {
+        "operationId": "twoJsonTypes",
+        "produces": [
+          "application/json",
+          "application/problem+json"
+        ],
+        "responses": {
+          "200": {
+            "description": "Один объект под двумя JSON-типами",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/text-with-errors": {
+      "get": {
+        "operationId": "textWithErrors",
+        "produces": [
+          "text/plain"
+        ],
+        "responses": {
+          "200": {
+            "description": "Текст",
+            "schema": {
+              "type": "string"
+            }
+          },
+          "400": {
+            "description": "Ошибка из @ControllerAdvice",
+            "schema": {
+              "type": "object",
+              "required": [
+                "message"
+              ],
+              "properties": {
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/create-with-text": {
+      "post": {
+        "operationId": "createWithText",
+        "consumes": [
+          "application/json",
+          "text/plain"
+        ],
+        "produces": [
+          "application/json",
+          "text/plain"
+        ],
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "required": true,
+            "schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Создано",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/text-with-dirty-errors": {
+      "get": {
+        "operationId": "textWithDirtyErrors",
+        "produces": [
+          "text/plain"
+        ],
+        "responses": {
+          "200": {
+            "description": "Текст",
+            "schema": {
+              "type": "string",
+              "maxLength": 10
+            }
+          },
+          "400": {
+            "description": "Ошибка, которую строкой не проверить",
+            "schema": {
+              "$ref": "#/definitions/DirtyError"
+            }
+          }
+        }
+      }
+    },
+    "/object-body": {
+      "post": {
+        "operationId": "objectBody",
+        "consumes": [
+          "text/plain"
+        ],
+        "parameters": [
+          {
+            "in": "body",
+            "name": "body",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Принято"
+          }
+        }
+      }
+    },
+    "/text-with-error-dto": {
+      "get": {
+        "operationId": "textWithErrorDto",
+        "produces": [
+          "text/plain"
+        ],
+        "responses": {
+          "200": {
+            "description": "Текст",
+            "schema": {
+              "type": "string"
+            }
+          },
+          "400": {
+            "description": "Ошибка",
+            "schema": {
+              "$ref": "#/definitions/ErrorDto"
+            }
+          }
+        }
+      }
+    },
+    "/text-with-two-problems": {
+      "get": {
+        "operationId": "textWithTwoProblems",
+        "produces": [
+          "text/plain"
+        ],
+        "responses": {
+          "200": {
+            "description": "Текст",
+            "schema": {
+              "type": "string"
+            }
+          },
+          "400": {
+            "description": "Ошибка с двумя проблемами",
+            "schema": {
+              "$ref": "#/definitions/TwoProblems"
+            }
+          }
+        }
+      }
+    },
+    "/json-xml": {
+      "get": {
+        "operationId": "jsonXmlWithDefault",
+        "produces": [
+          "application/json",
+          "application/xml"
+        ],
+        "responses": {
+          "200": {
+            "description": "Объект",
+            "schema": {
+              "$ref": "#/definitions/ErrorDto"
+            }
+          },
+          "404": {
+            "description": "Не найдено",
+            "schema": {
+              "$ref": "#/definitions/ErrorDto"
+            }
+          },
+          "default": {
+            "description": "Ошибка",
+            "schema": {
+              "$ref": "#/definitions/ErrorDto"
+            }
+          }
+        }
+      }
+    },
+    "/downloads/any": {
+      "get": {
+        "operationId": "downloadAny",
+        "produces": [
+          "*/*"
+        ],
+        "responses": {
+          "200": {
+            "description": "Файл",
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          }
+        }
+      }
+    },
+    "/wildcard/dirty": {
+      "get": {
+        "operationId": "wildcardDirty",
+        "produces": [
+          "*/*"
+        ],
+        "responses": {
+          "200": {
+            "description": "Объект с полем без схемы",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "payload": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "DirtyError": {
+      "type": "object",
+      "properties": {
+        "details": {},
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z]+$",
+          "maxLength": 8
+        }
+      }
+    },
+    "ErrorDto": {
+      "type": "object",
+      "required": [
+        "code"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        }
+      }
+    },
+    "TwoProblems": {
+      "type": "object",
+      "properties": {
+        "details": {},
+        "zbad": {
+          "type": "integer",
+          "const": 1
+        }
+      }
+    }
+  }
+}

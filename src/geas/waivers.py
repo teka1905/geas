@@ -667,8 +667,13 @@ class WaiverSet:
             f"  ожидался expected_source: {waiver.expected_source}\n"
             f"  фактический:              {actual}\n"
             f"Пересмотрите послабление и обновите expected_source осознанно. "
-            f"Если waiver задумывался только для одного варианта ответа, сузьте его "
-            f"полями status и content_type"
+            + (
+                "Если waiver задумывался только для одного тела запроса, закрепите это тело "
+                "в manifest полем request.content_type"
+                if waiver.direction is Direction.REQUEST
+                else "Если waiver задумывался только для одного варианта ответа, сузьте его "
+                "полями status и content_type"
+            )
         )
 
     def coverage(self, waiver: Waiver) -> int:
@@ -705,6 +710,18 @@ class WaiverSet:
     def reset_usage(self) -> None:
         """Сбросить отметки использования (нужно между прогонами генерации)."""
         self._usage.clear()
+
+    def usage_snapshot(self) -> dict[tuple[Any, ...], frozenset[tuple[Any, ...]]]:
+        """Снимок отметок использования — чтобы откатить пробную нормализацию."""
+        return {identity: frozenset(points) for identity, points in self._usage.items()}
+
+    def restore_usage(self, snapshot: dict[tuple[Any, ...], frozenset[tuple[Any, ...]]]) -> None:
+        """Вернуть отметки использования к снимку :meth:`usage_snapshot`.
+
+        Вариант, который пробно нормализовали и не взяли в контракт, не должен
+        считаться потребителем waiver'а: иначе устаревший waiver не был бы назван.
+        """
+        self._usage = {identity: set(points) for identity, points in snapshot.items()}
 
     def to_dict(self) -> dict[str, Any]:
         """Каноническое представление файла waivers."""

@@ -49,6 +49,7 @@ __all__ = [
     "ResponseContract",
     "SchemaNode",
     "StringNode",
+    "UncheckedVariant",
     "UnionKind",
     "UnionNode",
     "iter_nodes",
@@ -366,6 +367,68 @@ class ResponseContract:
     headers: tuple[ParameterContract, ...] = ()
     definitions: tuple[tuple[str, SchemaNode], ...] = ()
     origin: Origin = field(default_factory=lambda: Origin(source="", pointer=""))
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class UncheckedVariant:
+    """Тело, которое спецификация объявила, а контракт не проверяет.
+
+    Не путать с отсутствием тела: вариант есть, но структурного контракта у него нет
+    (``multipart/*``, ``application/octet-stream``, media type без ``schema``).
+    Он лежит в документе контракта отдельно от проверяемых вариантов, чтобы CLI,
+    ``describe_*`` и ошибки могли назвать его и причину, а не говорить «тела нет».
+    """
+
+    direction: Direction
+    content_type: str
+    reason: str
+    #: Статус ответа; ``None`` у тела запроса.
+    status: int | str | None = None
+    #: Обязательно ли тело запроса; у ответа всегда ``False``.
+    required: bool = False
+
+    def label(self) -> str:
+        """Ярлык варианта для сообщений: ``request multipart/form-data``, ``response 200:...``."""
+        if self.direction is Direction.REQUEST:
+            return f"request {self.content_type}"
+        return f"response {self.status}:{self.content_type}"
+
+    def describe(self) -> str:
+        """Строка для вывода и для ``unsupported``: вариант и причина.
+
+        Формат совпадает с прежними версиями (``request body …``, ``response …``):
+        ``unsupported`` входит в семантику контракта, и смена формы дала бы ложное
+        изменение в ``geas diff``.
+        """
+        if self.direction is Direction.REQUEST:
+            return f"request body {self.content_type}: {self.reason}"
+        return f"{self.label()}: {self.reason}"
+
+    def to_document(self) -> dict[str, object]:
+        """Запись в документе контракта (``unchecked``)."""
+        item: dict[str, object] = {
+            "direction": self.direction.value,
+            "content_type": self.content_type,
+            "reason": self.reason,
+        }
+        if self.direction is Direction.REQUEST:
+            item["required"] = self.required
+        else:
+            item["status"] = self.status
+        return item
+
+    @classmethod
+    def from_document(cls, item: dict[str, object]) -> UncheckedVariant:
+        """Прочитать запись документа контракта."""
+        direction = Direction(str(item["direction"]))
+        status = item.get("status")
+        return cls(
+            direction=direction,
+            content_type=str(item["content_type"]),
+            reason=str(item["reason"]),
+            status=status if isinstance(status, (int, str)) else None,
+            required=bool(item.get("required", False)),
+        )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

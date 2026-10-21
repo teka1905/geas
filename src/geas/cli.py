@@ -60,6 +60,7 @@ from .manifest import (
     load_manifest,
     load_yaml,
 )
+from .media import JSON_ALIASES, MediaKind, media_kind
 from .models import Direction, ParameterLocation
 from .naming import python_path_from_key
 from .normalization.raw import RawOperation
@@ -253,7 +254,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
             if operation["responses"]:
                 print(f"      responses: {', '.join(operation['responses'])}")
             for reason in operation["unsupported"]:
-                print(f"      не поддержано: {reason}")
+                print(f"      объявлено, но не проверяется: {reason}")
     print()
     print("* — операция выбрана manifest и попадает в generated-артефакты")
     if any(op["route_error"] for source in report["sources"] for op in source["operations"]):
@@ -300,6 +301,16 @@ def _inspect(manifest: Manifest, *, only: str | None = None) -> dict[str, Any]:
                 for item in raw.responses
                 if item.unsupported_reason
             ]
+            unchecked_request = {
+                body.content_type: body.unsupported_reason
+                for body in raw.bodies
+                if body.unsupported_reason
+            }
+            unchecked_responses = {
+                f"{item.status}:{item.content_type or '-'}": item.unsupported_reason
+                for item in raw.responses
+                if item.unsupported_reason
+            }
             operations.append(
                 {
                     "operation_id": raw.operation_id,
@@ -316,6 +327,8 @@ def _inspect(manifest: Manifest, *, only: str | None = None) -> dict[str, Any]:
                         if not item.unsupported_reason
                     ),
                     "unsupported": unsupported,
+                    "unchecked_request_content_types": unchecked_request,
+                    "unchecked_responses": unchecked_responses,
                     "route_error": raw.route_error,
                 }
             )
@@ -480,18 +493,63 @@ def _complete_add_entry(
     completed["path"] = operation["path"]
 
     request_types = operation["request_content_types"]
+    unchecked_types = operation["unchecked_request_content_types"]
     if args.request_content_type:
+        if args.request_content_type in unchecked_types:
+            raise _UsageError(
+                f"request content type {args.request_content_type!r} объявлен операцией, но "
+                f"не проверяется: {unchecked_types[args.request_content_type]}. "
+                f"Проверяемые: {request_types or '<нет>'}"
+            )
         if args.request_content_type not in request_types:
+            declared = sorted([*request_types, *unchecked_types])
             raise _UsageError(
                 f"request content type {args.request_content_type!r} не объявлен операцией; "
-                f"доступны: {request_types or '<нет тела>'}"
+                f"объявлены: {declared or '<нет тела>'}"
+                + (f"; из них не проверяются: {sorted(unchecked_types)}" if unchecked_types else "")
             )
     elif len(request_types) == 1:
         completed["request"] = {"content_type": request_types[0]}
     elif len(request_types) > 1:
-        raise _UsageError(
-            "у операции несколько JSON request content types; передайте --request-content-type"
-        )
+        preferred = _preferred_media_type(request_types)
+        if preferred is None:
+            raise _UsageError(
+                f"у операции несколько request content types ({', '.join(request_types)}); "
+                f"передайте --request-content-type"
+            )
+        completed["request"] = {"content_type": preferred}
+
+    unchecked_responses = operation["unchecked_responses"]
+    for raw_selector in args.response or ():
+        selector = _parse_response_selector(raw_selector)
+        status = str(selector["status"])
+        content_type = selector.get("content_type")
+        if content_type is None:
+            # Селектор без content type означает вариант без тела. Если у статуса есть
+            # только тела без контракта, подсказать нужный селектор понятнее, чем потом
+            # упасть на «вариант исчез из спецификации».
+            bodies = [label for label in unchecked_responses if label.partition(":")[0] == status]
+            checked = any(item.partition(":")[0] == status for item in operation["responses"])
+            if bodies and not checked:
+                raise _UsageError(
+                    f"--response {raw_selector!r} означает вариант без тела, а у статуса "
+                    f"{status} есть только тела без проверки: {', '.join(bodies)}. Укажите "
+                    f"content type, например --response {bodies[0]}"
+                )
+            continue
+        declared = [f"{status}:{content_type}"]
+        hits = [label for label in declared if label in unchecked_responses]
+        if hits:
+            # Закрепить такой вариант можно — например, у выгрузки файла других нет, а
+            # операция нужна ради параметров и описания, — но мок и проверка тела для него
+            # недоступны, и об этом надо сказать сразу.
+            reasons = "; ".join(f"{label} — {unchecked_responses[label]}" for label in hits)
+            print(
+                f"предупреждение: вариант ответа {raw_selector!r} объявлен операцией, но не "
+                f"проверяется: {reasons}. Мок и проверка тела для него недоступны. "
+                f"Проверяемые: {', '.join(operation['responses']) or '<нет>'}",
+                file=sys.stderr,
+            )
 
     if not args.response:
         response_variants = [_response_from_report(item) for item in operation["responses"]]
@@ -501,6 +559,21 @@ def _complete_add_entry(
             if isinstance(item["status"], int) and 200 <= item["status"] < 300
         ]
         selectable = successful or response_variants
+        # Текстовые варианты рядом с другими вторичны: до их поддержки ``add`` их не видел
+        # и закреплял JSON, так и остаётся.
+        primary = [
+            item
+            for item in selectable
+            if media_kind(item.get("content_type", "")) is not MediaKind.TEXT
+        ]
+        if primary and len(primary) < len(selectable):
+            selectable = primary
+        if len(selectable) > 1 and len({str(item["status"]) for item in selectable}) == 1:
+            preferred = _preferred_media_type(
+                [item["content_type"] for item in selectable if "content_type" in item]
+            )
+            if preferred is not None:
+                selectable = [item for item in selectable if item.get("content_type") == preferred]
         if len(selectable) == 1:
             completed["responses"] = selectable
         elif len(selectable) > 1:
@@ -508,12 +581,38 @@ def _complete_add_entry(
             raise _UsageError(
                 f"у операции несколько вариантов ответа ({variants}); передайте --response"
             )
+        elif unchecked_responses:
+            raise _UsageError(
+                "у операции нет проверяемого варианта ответа; объявлены без проверки: "
+                + "; ".join(f"{label} — {reason}" for label, reason in unchecked_responses.items())
+                + ". Закрепите нужный явно через --response: мок и проверка тела для него "
+                "будут недоступны"
+            )
         else:
             raise _UsageError("у операции нет поддерживаемого варианта ответа")
 
     if not args.python_path:
         completed["python_path"] = list(python_path_from_key(args.key))
     return completed
+
+
+def _preferred_media_type(content_types: Sequence[str]) -> str | None:
+    """JSON-вариант, который ``add`` закрепляет сам, если выбор очевиден.
+
+    До поддержки текстовых тел ``add`` не видел ``text/plain``, ``text/json`` и ``*/*``
+    (в OpenAPI 3) рядом с JSON и закреплял JSON. Так и остаётся: если среди вариантов
+    ровно один «настоящий» JSON-тип — не ``*/*`` и не устаревший ``text/json`` (так их
+    пишут генераторы рядом с основным типом), — закрепляется он. Два настоящих
+    JSON-типа (``application/json`` и ``application/merge-patch+json``) — по-прежнему
+    ошибка с просьбой выбрать.
+    """
+    json_types = [item for item in content_types if media_kind(item) is MediaKind.JSON]
+    primary = [item for item in json_types if item not in JSON_ALIASES]
+    if len(primary) == 1:
+        return primary[0]
+    if not primary and len(json_types) == 1:
+        return json_types[0]
+    return None
 
 
 def _response_from_report(raw: str) -> dict[str, Any]:
@@ -601,7 +700,7 @@ def _cmd_update(args: argparse.Namespace) -> int:
         print(f"  {key} (параметры {location}): d42-схема не сгенерирована — {reason}")
     for built in result.operations:
         for reason in built.unsupported:
-            print(f"  {built.contract.key}: не поддержано — {reason}")
+            print(f"  {built.contract.key}: объявлено, но не проверяется — {reason}")
     for key, direction, owner, target in artifacts.d42_cycle_cuts:
         print(
             f"  {key} ({direction}): цикл отсечён на ссылке {owner} -> {target}; "

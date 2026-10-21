@@ -17,13 +17,13 @@ from __future__ import annotations
 from typing import Any
 
 from ..errors import SpecLoadError, UnsupportedConstructError
+from ..media import JSON_ALIASES, unchecked_body_reason
 from ..models import Origin, ParameterLocation
 from ..normalization.raw import (
     RawBody,
     RawOperation,
     RawParameter,
     RawResponse,
-    is_json_media_type,
     normalize_media_type,
 )
 from ..normalization.refs import SpecRegistry
@@ -116,13 +116,6 @@ class OpenApi30Dialect:
 
 
 # ----------------------------------------------------------------- помощники
-
-
-def _media_reason(media_type: str) -> str:
-    return (
-        f"media type {media_type!r} не является JSON-совместимым, "
-        f"структурный контракт тела для него не строится"
-    )
 
 
 def _indexed_parameters(
@@ -242,12 +235,11 @@ def _request_bodies(
             )
         canonical = normalize_media_type(media_type)
         schema = media.get("schema")
+        reason: str | None
         if schema is None:
             reason = "у media type нет schema — структурный контракт тела неизвестен"
-        elif not is_json_media_type(canonical):
-            reason = _media_reason(canonical)
         else:
-            reason = None
+            reason = unchecked_body_reason(canonical, schema)
         bodies.append(
             RawBody(
                 content_type=canonical,
@@ -255,6 +247,9 @@ def _request_bodies(
                 required=required,
                 origin=media_origin.child("schema"),
                 unsupported_reason=reason,
+                # До поддержки текстовых тел ``*/*`` и ``text/json`` в OpenAPI 3.0 в
+                # контракт не входили, и их схемы не нормализовались.
+                lenient=canonical in JSON_ALIASES,
             )
         )
     bodies.sort(key=lambda item: item.content_type)
@@ -313,12 +308,11 @@ def _responses(
                 )
             canonical = normalize_media_type(media_type)
             schema = media.get("schema")
+            reason: str | None
             if schema is None:
-                reason: str | None = "у media type нет schema — контракт тела неизвестен"
-            elif not is_json_media_type(canonical):
-                reason = _media_reason(canonical)
+                reason = "у media type нет schema — контракт тела неизвестен"
             else:
-                reason = None
+                reason = unchecked_body_reason(canonical, schema)
             collected.append(
                 RawResponse(
                     status=status,
@@ -327,6 +321,7 @@ def _responses(
                     headers=headers,
                     origin=media_origin.child("schema"),
                     unsupported_reason=reason,
+                    lenient=canonical in JSON_ALIASES,
                 )
             )
     collected.sort(key=lambda item: (str(item.status), item.content_type or ""))
