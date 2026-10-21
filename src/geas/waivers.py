@@ -37,7 +37,7 @@ import yaml
 
 from .errors import ContractError, WaiverError
 from .fingerprints import ANNOTATION_KEYS, digest, semantic_source_digest, strip_annotations
-from .manifest import Manifest, NonWaivableAssertion
+from .manifest import Manifest, NonWaivableAssertion, load_yaml, parse_calendar_date
 from .models import Direction
 from .paths import ContractPath, body_path, format_contract_path, parse_contract_path
 
@@ -150,28 +150,6 @@ _ALLOWED_FIELDS = frozenset(
         "content_type",
     }
 )
-
-
-def _parse_expiry(raw: Any, where: str) -> dt.date:
-    """Разобрать ``expires_at``.
-
-    Принимается только календарная дата. YAML сам превращает ``2026-12-31`` в
-    :class:`datetime.date`, а ``2026-12-31T10:00:00Z`` — в :class:`datetime.datetime`,
-    который является подклассом ``date``; без явной проверки он бы проскочил и
-    сломал сравнение уже в рантайме.
-    """
-    if isinstance(raw, dt.datetime):
-        raise WaiverError(
-            f"{where}.expires_at: ожидалась календарная дата без времени, получено {raw!r}"
-        )
-    if isinstance(raw, dt.date):
-        return raw
-    if isinstance(raw, str):
-        try:
-            return dt.date.fromisoformat(raw)
-        except ValueError as exc:
-            raise WaiverError(f"{where}.expires_at: {raw!r} не разбирается как YYYY-MM-DD") from exc
-    raise WaiverError(f"{where}.expires_at: ожидалась дата YYYY-MM-DD, получено {raw!r}")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -358,7 +336,9 @@ class Waiver:
             reason=data["reason"],
             owner=data["owner"],
             issue=issue,
-            expires_at=_parse_expiry(data["expires_at"], where),
+            expires_at=parse_calendar_date(
+                data["expires_at"], f"{where}.expires_at", error=WaiverError
+            ),
             expected_source=expected_source,
             replacement=replacement,
             values=values,
@@ -773,8 +753,9 @@ def _load_document(path: Path) -> Any:
     try:
         if path.suffix.lower() == ".json":
             return json.loads(text)
-        return yaml.safe_load(text)
-    except (yaml.YAMLError, json.JSONDecodeError) as exc:
+        return load_yaml(text)
+    except (yaml.YAMLError, ValueError) as exc:
+        # ``ValueError`` — от JSON и от редких литералов YAML вроде ``0x_``.
         raise WaiverError(f"{path} не разбирается: {exc}") from exc
 
 

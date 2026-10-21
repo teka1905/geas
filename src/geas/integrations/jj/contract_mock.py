@@ -41,6 +41,7 @@ from typing import TYPE_CHECKING, Any
 from ...errors import ContractMockError, RequestContractError
 from ...media import DEFAULT_TEXT_CHARSET, MediaKind, declared_charset, media_kind
 from ...models import Direction, ParameterLocation
+from ...runtime.operation import route_variants
 from ...runtime.validation import (
     ARRAY_DELIMITERS,
     decode_parameter,
@@ -388,6 +389,13 @@ class ContractMock:
 
         return _TEMPLATE.sub(substitute, self._operation.path)
 
+    def _matched_paths(self) -> list[str]:
+        """Формы маршрута, которые перехватывает мок."""
+        resolved = self._resolved_path()
+        if not self._operation.accept_trailing_slash:
+            return [resolved]
+        return list(route_variants(resolved))
+
     # ------------------------------------------------------- контекст-менеджер
 
     async def __aenter__(self) -> ContractMock:
@@ -405,7 +413,7 @@ class ContractMock:
             headers["Content-Type"] = declared
         matcher = backend.build_matcher(
             method=self._operation.method,
-            path=self._resolved_path(),
+            path=self._matched_paths(),
             params=self._query_params or None,
             headers=self._headers or None,
         )

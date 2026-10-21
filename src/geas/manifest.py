@@ -16,6 +16,7 @@ Manifest — единственный вход генератора. Он фик
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from dataclasses import dataclass, field
 from enum import Enum
@@ -44,10 +45,13 @@ __all__ = [
     "ResponseSelector",
     "Selection",
     "SourceSpec",
+    "TemporarySetting",
     "UnknownFormatPolicy",
     "default_manifest_document",
     "dump_manifest",
     "load_manifest",
+    "load_yaml",
+    "parse_calendar_date",
 ]
 
 #: Версия формата manifest. Ядро читает только эту версию.
@@ -178,12 +182,22 @@ class SourceSpec:
     #: Префикс маршрута. ``None`` — взять тот, что диктует сам документ
     #: (``basePath`` в Swagger 2.0, пустая строка в OpenAPI 3.0).
     base_path: str | None = None
+    #: Префикс маршрута спецификации, который снимается до добавления ``base_path``.
+    #: Отображает маршруты сервиса на маршруты клиента за шлюзом. ``None`` — не снимать.
+    strip_prefix: str | None = None
+    #: Принимает ли сервер маршруты операций источника и со слэшем на конце, и без
+    #: него. Умолчание строгое; операция может переопределить значение.
+    accept_trailing_slash: bool = False
 
     @classmethod
     def from_dict(cls, name: str, data: Any) -> SourceSpec:
         where = f"sources.{name}"
         data = _require_mapping(data, where)
-        _reject_unknown(data, {"path", "root", "selection", "base_path"}, where)
+        _reject_unknown(
+            data,
+            {"path", "root", "selection", "base_path", "strip_prefix", "accept_trailing_slash"},
+            where,
+        )
         python_identifier(to_snake_case(name), context=f"имя источника {name!r}")
         raw_selection = data.get("selection", Selection.EXPLICIT.value)
         try:
@@ -197,14 +211,44 @@ class SourceSpec:
         if root is not None and not isinstance(root, str):
             raise ManifestError(f"{where}.root: ожидалась строка")
         base_path = data.get("base_path")
-        if base_path is not None and not isinstance(base_path, str):
-            raise ManifestError(f"{where}.base_path: ожидалась строка")
+        if base_path is not None:
+            if not isinstance(base_path, str):
+                raise ManifestError(f"{where}.base_path: ожидалась строка")
+            # Пустая строка допустима: она убирает префикс, который диктует документ.
+            if base_path and not base_path.startswith("/"):
+                raise ManifestError(
+                    f"{where}.base_path: префикс должен начинаться с '/', получено {base_path!r}"
+                )
+        strip_prefix = data.get("strip_prefix")
+        if strip_prefix is not None:
+            if not isinstance(strip_prefix, str):
+                raise ManifestError(f"{where}.strip_prefix: ожидалась строка")
+            if not strip_prefix.startswith("/"):
+                raise ManifestError(
+                    f"{where}.strip_prefix: префикс должен начинаться с '/', получено "
+                    f"{strip_prefix!r}"
+                )
+            if not strip_prefix.rstrip("/"):
+                raise ManifestError(
+                    f"{where}.strip_prefix: снимать корень '/' бессмысленно — "
+                    f"укажите префикс вида '/api/v1' или уберите настройку"
+                )
+        accept_slash = data.get("accept_trailing_slash", False)
+        if isinstance(accept_slash, dict):
+            raise ManifestError(
+                f"{where}.accept_trailing_slash: срок и тикет задаются только у операции; "
+                f"у источника это свойство сервера — ожидалось булево значение"
+            )
+        if not isinstance(accept_slash, bool):
+            raise ManifestError(f"{where}.accept_trailing_slash: ожидалось булево значение")
         return cls(
             name=name,
             path=_require_str(data, "path", where),
             root=root,
             selection=selection,
             base_path=base_path,
+            strip_prefix=strip_prefix,
+            accept_trailing_slash=accept_slash,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -213,6 +257,10 @@ class SourceSpec:
             data["root"] = self.root
         if self.base_path is not None:
             data["base_path"] = self.base_path
+        if self.strip_prefix is not None:
+            data["strip_prefix"] = self.strip_prefix
+        if self.accept_trailing_slash:
+            data["accept_trailing_slash"] = True
         return data
 
 
@@ -291,6 +339,59 @@ class NonWaivableAssertion:
         }
 
 
+def parse_calendar_date(
+    raw: Any, where: str, *, error: type[ContractError] = ManifestError
+) -> dt.date:
+    """Разобрать календарную дату ``YYYY-MM-DD`` — срок waiver'а или временной настройки.
+
+    YAML сам превращает ``2026-12-31`` в :class:`datetime.date`, а
+    ``2026-12-31T10:00:00Z`` — в :class:`datetime.datetime`, который является
+    подклассом ``date``; без явной проверки он бы проскочил и сломал сравнение
+    уже в рантайме.
+    """
+    if isinstance(raw, dt.datetime):
+        raise error(f"{where}: ожидалась календарная дата без времени, получено {raw!r}")
+    if isinstance(raw, dt.date):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return dt.date.fromisoformat(raw)
+        except ValueError as exc:
+            raise error(f"{where}: {raw!r} не разбирается как YYYY-MM-DD") from exc
+    raise error(f"{where}: ожидалась дата YYYY-MM-DD, получено {raw!r}")
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class TemporarySetting:
+    """Временно включённая настройка операции: обход дефекта спецификации.
+
+    Срок подчиняется тем же политикам, что и waiver: после ``expires_at``
+    генерация падает, дальше ``policies.waiver_max_days`` от сегодня его не
+    выписать, за ``policies.waiver_warn_days`` начинается предупреждение.
+    """
+
+    issue: str
+    reason: str
+    expires_at: dt.date
+
+    @classmethod
+    def from_dict(cls, data: Any, where: str) -> TemporarySetting:
+        data = _require_mapping(data, where)
+        _reject_unknown(data, {"issue", "reason", "expires_at"}, where)
+        if "expires_at" not in data:
+            raise ManifestError(f"{where}: поле 'expires_at' обязательно")
+        return cls(
+            issue=_require_str(data, "issue", where),
+            reason=_require_str(data, "reason", where),
+            expires_at=parse_calendar_date(data["expires_at"], f"{where}.expires_at"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        # Дата, а не строка: ``dump_manifest`` пишет её голой, как в исходном YAML,
+        # и ``geas add`` не добавляет кавычки при перезаписи manifest.
+        return {"issue": self.issue, "reason": self.reason, "expires_at": self.expires_at}
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class OperationSpec:
     """Запись manifest об одной операции.
@@ -313,6 +414,11 @@ class OperationSpec:
     #: Генерировать ли для операции d42-схемы. Отключается явно, когда d42 для
     #: операции не нужен; рекурсия отключения не требует — цикл отсекается.
     d42: bool = True
+    #: Принимать ли маршрут и со слэшем на конце. ``None`` — взять значение источника.
+    accept_trailing_slash: bool | None = None
+    #: Тикет и срок, если ``accept_trailing_slash`` включён временно — в обход
+    #: дефекта спецификации. Задан только вместе с ``accept_trailing_slash=True``.
+    trailing_slash_until: TemporarySetting | None = None
 
     @classmethod
     def from_dict(cls, key: str, data: Any) -> OperationSpec:
@@ -330,6 +436,7 @@ class OperationSpec:
                 "python_path",
                 "non_waivable",
                 "d42",
+                "accept_trailing_slash",
             },
             where,
         )
@@ -378,6 +485,27 @@ class OperationSpec:
         if not isinstance(d42_enabled, bool):
             raise ManifestError(f"{where}.d42: ожидалось булево значение")
 
+        # Отсутствие ключа — «взять значение источника»; явный ``null`` — ошибка, как
+        # у ``d42`` и у источника: пустое значение не должно молча наследоваться.
+        accept_slash = data.get("accept_trailing_slash")
+        trailing_slash_until: TemporarySetting | None = None
+        if "accept_trailing_slash" in data and accept_slash is None:
+            raise ManifestError(
+                f"{where}.accept_trailing_slash: ожидалось булево значение или объект "
+                f"с полями issue, reason, expires_at"
+            )
+        if isinstance(accept_slash, dict):
+            # Объект вместо ``true`` — включение на время, с тикетом и сроком.
+            trailing_slash_until = TemporarySetting.from_dict(
+                accept_slash, f"{where}.accept_trailing_slash"
+            )
+            accept_slash = True
+        elif accept_slash is not None and not isinstance(accept_slash, bool):
+            raise ManifestError(
+                f"{where}.accept_trailing_slash: ожидалось булево значение или объект "
+                f"с полями issue, reason, expires_at"
+            )
+
         operation_id = data.get("operation_id")
         if operation_id is not None and not isinstance(operation_id, str):
             raise ManifestError(f"{where}.operation_id: ожидалась строка")
@@ -396,6 +524,8 @@ class OperationSpec:
             python_path=python_path,
             non_waivable=tuple(non_waivable),
             d42=d42_enabled,
+            accept_trailing_slash=accept_slash,
+            trailing_slash_until=trailing_slash_until,
         )
 
     def resolved_python_path(self) -> tuple[str, ...]:
@@ -420,6 +550,10 @@ class OperationSpec:
             data["non_waivable"] = [item.to_dict() for item in self.non_waivable]
         if not self.d42:
             data["d42"] = False
+        if self.trailing_slash_until is not None:
+            data["accept_trailing_slash"] = self.trailing_slash_until.to_dict()
+        elif self.accept_trailing_slash is not None:
+            data["accept_trailing_slash"] = self.accept_trailing_slash
         return data
 
 
@@ -493,6 +627,43 @@ class Manifest:
                     f"операция {owner!r} занимает имя {'.'.join(path)}, которое уже используется "
                     f"как namespace операцией {namespaces[path]!r}. Задайте python_path в manifest"
                 )
+
+    def temporary_settings(self) -> tuple[tuple[str, TemporarySetting], ...]:
+        """Временно включённые настройки операций: пары ``(ключ операции, срок)``."""
+        return tuple(
+            (spec.key, spec.trailing_slash_until)
+            for spec in self.operations
+            if spec.trailing_slash_until is not None
+        )
+
+    def check_temporary_settings(self, *, today: dt.date) -> None:
+        """Проверить сроки временных настроек по политикам waiver'ов."""
+        limit = today + dt.timedelta(days=self.policies.waiver_max_days)
+        for key, setting in self.temporary_settings():
+            where = f"operations.{key}.accept_trailing_slash"
+            if setting.expires_at < today:
+                raise ManifestError(
+                    f"{where}: срок истёк {setting.expires_at.isoformat()} "
+                    f"(issue: {setting.issue}). Исправьте спецификацию и уберите настройку "
+                    f"или, согласовав, сдвиньте expires_at"
+                )
+            if setting.expires_at > limit:
+                raise ManifestError(
+                    f"{where}: expires_at {setting.expires_at.isoformat()} дальше "
+                    f"{self.policies.waiver_max_days} дней от сегодня "
+                    f"(политика policies.waiver_max_days)"
+                )
+
+    def expiring_temporary_settings(
+        self, *, today: dt.date
+    ) -> tuple[tuple[str, TemporarySetting, int], ...]:
+        """Временные настройки, которым осталось не больше ``waiver_warn_days`` дней."""
+        soon: list[tuple[str, TemporarySetting, int]] = []
+        for key, setting in self.temporary_settings():
+            days_left = (setting.expires_at - today).days
+            if 0 <= days_left <= self.policies.waiver_warn_days:
+                soon.append((key, setting, days_left))
+        return tuple(sorted(soon, key=lambda item: (item[2], item[0])))
 
     def source(self, name: str) -> SourceSpec:
         """Найти источник по имени."""
@@ -598,8 +769,38 @@ class Manifest:
         )
 
 
+class _SafeDateLoader(yaml.SafeLoader):
+    """``SafeLoader``, у которого недопустимая дата — ошибка YAML с позицией.
+
+    PyYAML сам строит ``datetime.date`` из ``2026-11-31`` и падает голым
+    ``ValueError`` без строки и ключа. Здесь это ``ConstructorError`` с местом в
+    файле; набор конструируемых типов тот же, что у ``yaml.safe_load``.
+    """
+
+    def construct_yaml_timestamp(self, node: yaml.ScalarNode) -> Any:
+        try:
+            return super().construct_yaml_timestamp(node)
+        except ValueError as exc:
+            raise yaml.constructor.ConstructorError(
+                None,
+                None,
+                f"недопустимая дата или время {node.value!r} ({exc}); ожидалось YYYY-MM-DD",
+                node.start_mark,
+            ) from exc
+
+
+_SafeDateLoader.add_constructor(
+    "tag:yaml.org,2002:timestamp", _SafeDateLoader.construct_yaml_timestamp
+)
+
+
+def load_yaml(text: str) -> Any:
+    """Разобрать YAML так же безопасно, как ``yaml.safe_load``, с понятной ошибкой даты."""
+    return yaml.load(text, Loader=_SafeDateLoader)
+
+
 def _load_document(path: Path) -> Any:
-    """Прочитать YAML или JSON. Используется только ``yaml.safe_load``."""
+    """Прочитать YAML или JSON. YAML разбирается только безопасно, см. :func:`load_yaml`."""
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -607,8 +808,9 @@ def _load_document(path: Path) -> Any:
     try:
         if path.suffix.lower() == ".json":
             return json.loads(text)
-        return yaml.safe_load(text)
-    except (yaml.YAMLError, json.JSONDecodeError) as exc:
+        return load_yaml(text)
+    except (yaml.YAMLError, ValueError) as exc:
+        # ``ValueError`` — от JSON и от редких литералов YAML вроде ``0x_``.
         raise ManifestError(f"manifest {path} не разбирается: {exc}") from exc
 
 

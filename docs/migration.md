@@ -10,7 +10,7 @@
 ```toml
 # pyproject.toml тестового проекта
 dependencies = [
-    "geas[d42,jj]==0.6.0",
+    "geas[d42,jj]==0.7.0",
 ]
 ```
 
@@ -216,6 +216,10 @@ extend-exclude = ["**/contracts/generated/**"]
    `--response 200:application/json`.
 3. **Выписать waiver.** Точечный, со сроком и владельцем — см.
    [waivers.md](waivers.md#как-выписать-waiver).
+
+Если клиент ходит со слэшем на конце, а спецификация описывает маршрут без него
+(или наоборот), это не схема и не waiver: включите `accept_trailing_slash`, см.
+[README](../README.md#слэш-на-конце-маршрута).
 
 Конструкции, которые точны в JSON Schema, но не выражаются в d42 (`multipleOf`,
 `allOf` с недоказуемым пересечением), операцию не блокируют. geas сам отключает d42-схемы

@@ -41,8 +41,8 @@ from .artifacts import (
     render_artifacts,
     write_artifacts,
 )
-from .contracts import build_contracts
-from .dialects.base import detect_dialect
+from .contracts import build_contracts, route_hint
+from .dialects.base import detect_dialect, source_operations
 from .errors import (
     ArtifactError,
     ContractError,
@@ -58,6 +58,7 @@ from .manifest import (
     default_manifest_document,
     dump_manifest,
     load_manifest,
+    load_yaml,
 )
 from .media import JSON_ALIASES, MediaKind, media_kind
 from .models import Direction, ParameterLocation
@@ -246,6 +247,8 @@ def _cmd_list(args: argparse.Namespace) -> int:
             key = operation["key"] or "-"
             print(f"  {mark} {operation['method']:<7} {operation['path']}")
             print(f"      operationId={operation['operation_id'] or '-'}  ключ={key}")
+            if operation["route_error"]:
+                print(f"      ! {operation['route_error']}")
             if operation["request_content_types"]:
                 print(f"      request: {', '.join(operation['request_content_types'])}")
             if operation["responses"]:
@@ -254,6 +257,10 @@ def _cmd_list(args: argparse.Namespace) -> int:
                 print(f"      объявлено, но не проверяется: {reason}")
     print()
     print("* — операция выбрана manifest и попадает в generated-артефакты")
+    if any(op["route_error"] for source in report["sources"] for op in source["operations"]):
+        print(
+            "! — маршрут не отображён strip_prefix; если такая операция выбрана, генерация падает"
+        )
     return EXIT_OK
 
 
@@ -270,13 +277,21 @@ def _inspect(manifest: Manifest, *, only: str | None = None) -> dict[str, Any]:
         dialect = detect_dialect(registry.entry_document(), source=source.name)
         operations: list[dict[str, Any]] = []
         bindings = [spec for spec in manifest.operations if spec.source == source.name]
-        for raw in dialect.operations(registry, base_path=source.base_path):
+        raw_operations = source_operations(
+            dialect,
+            registry,
+            source=source.name,
+            base_path=source.base_path,
+            strip_prefix=source.strip_prefix,
+        )
+        routed = {(raw.method, raw.path) for raw in raw_operations if not raw.route_error}
+        for raw in raw_operations:
             key: str | None = None
             if source.selection is Selection.ALL:
                 if raw.operation_id:
                     key = f"{source.name}.{raw.operation_id}"
             else:
-                key = _explicit_key(bindings, raw)
+                key = _explicit_key(bindings, raw, routed=routed)
             unsupported = [
                 f"request {body.content_type}: {body.unsupported_reason}"
                 for body in raw.bodies
@@ -314,6 +329,7 @@ def _inspect(manifest: Manifest, *, only: str | None = None) -> dict[str, Any]:
                     "unsupported": unsupported,
                     "unchecked_request_content_types": unchecked_request,
                     "unchecked_responses": unchecked_responses,
+                    "route_error": raw.route_error,
                 }
             )
         sources.append(
@@ -328,16 +344,21 @@ def _inspect(manifest: Manifest, *, only: str | None = None) -> dict[str, Any]:
     return {"manifest_version": MANIFEST_VERSION, "sources": sources}
 
 
-def _explicit_key(bindings: Sequence[OperationSpec], raw: RawOperation) -> str | None:
+def _explicit_key(
+    bindings: Sequence[OperationSpec], raw: RawOperation, *, routed: set[tuple[str, str]]
+) -> str | None:
     """Ключ, под которым explicit-источник выбирает операцию, или ``None``.
 
     Правило то же, что у привязки: закреплённый маршрут сильнее ``operationId``.
     Один ``operationId`` бывает у нескольких ручек, а у операции без
-    ``operationId`` другого адреса, кроме маршрута, нет.
+    ``operationId`` другого адреса, кроме маршрута, нет. ``routed`` — маршруты
+    операций без ``route_error``: такой маршрут принадлежит им, а не операции вне
+    ``strip_prefix`` с совпавшим исходным путём.
     """
+    route = (raw.method, raw.path)
     for spec in bindings:
         if spec.method and spec.path:
-            if (spec.method, spec.path) == (raw.method, raw.path):
+            if (spec.method, spec.path) == route and not (raw.route_error and route in routed):
                 return spec.key
         elif spec.operation_id and spec.operation_id == raw.operation_id:
             return spec.key
@@ -354,8 +375,8 @@ def _cmd_add(args: argparse.Namespace) -> int:
     except OSError as exc:
         raise ManifestError(f"не удалось прочитать manifest {manifest_path}: {exc}") from exc
     try:
-        document = yaml.safe_load(original_text)
-    except yaml.YAMLError as exc:
+        document = load_yaml(original_text)
+    except (yaml.YAMLError, ValueError) as exc:
         raise ManifestError(f"manifest {manifest_path} не разбирается: {exc}") from exc
     if not isinstance(document, dict):
         raise ManifestError(f"{manifest_path}: ожидался объект")
@@ -388,8 +409,8 @@ def _cmd_add(args: argparse.Namespace) -> int:
     if current_entry is not None:
         print(
             f"операция {args.key} уже есть в manifest, но с другими параметрами.\n"
-            f"  сейчас:    {json.dumps(operations[args.key], ensure_ascii=False, sort_keys=True)}\n"
-            f"  предложено: {json.dumps(entry, ensure_ascii=False, sort_keys=True)}\n"
+            f"  сейчас:    {_entry_json(operations[args.key])}\n"
+            f"  предложено: {_entry_json(entry)}\n"
             f"Отредактируйте manifest вручную, если это осознанное изменение",
             file=sys.stderr,
         )
@@ -405,6 +426,7 @@ def _cmd_add(args: argparse.Namespace) -> int:
     manifest = Manifest.from_dict(candidate, base_dir=manifest_path.parent)
     waivers = load_waivers(manifest.base_dir / manifest.waivers_path)
     waivers.validate(manifest, today=dt.date.today())
+    manifest.check_temporary_settings(today=dt.date.today())
     result = build_contracts(manifest, waivers)
     artifacts = render_artifacts(manifest, result)
     with tempfile.TemporaryDirectory(prefix="geas-add-") as staging:
@@ -414,6 +436,11 @@ def _cmd_add(args: argparse.Namespace) -> int:
     print(f"операция {args.key} добавлена в {manifest_path}")
     print("Теперь запустите 'geas update', чтобы обновить артефакты")
     return EXIT_OK
+
+
+def _entry_json(entry: Any) -> str:
+    """Запись manifest одной строкой; YAML-даты (сроки настроек) печатаются как ISO."""
+    return json.dumps(entry, ensure_ascii=False, sort_keys=True, default=str)
 
 
 def _operation_binding_matches(*, current: dict[str, Any], proposed: dict[str, Any]) -> bool:
@@ -439,14 +466,26 @@ def _complete_add_entry(
         and (not args.path or operation["path"] == args.path)
     ]
     if not candidates:
-        raise _UsageError(
-            f"в источнике {args.source!r} нет операции с переданным operationId/method/path"
+        # Подсказка нужна, только если не нашёлся сам маршрут, а не operationId.
+        route_missing = args.path and not any(
+            operation["path"] == args.path
+            and (not args.method or operation["method"] == args.method.upper())
+            for operation in operations
         )
-    if len(candidates) > 1:
-        routes = ", ".join(f"{item['method']} {item['path']}" for item in candidates)
+        hint = route_hint(manifest.source(args.source)) if route_missing else ""
+        raise _UsageError(
+            f"в источнике {args.source!r} нет операции с переданным operationId/method/path{hint}"
+        )
+    # Операцию с ``route_error`` выбрать нельзя: среди подходящих она не кандидат,
+    # а если других нет, её причина понятнее, чем «выбрано неоднозначно».
+    routable = [operation for operation in candidates if not operation["route_error"]]
+    if not routable:
+        raise _UsageError(candidates[0]["route_error"])
+    if len(routable) > 1:
+        routes = ", ".join(f"{item['method']} {item['path']}" for item in routable)
         raise _UsageError(f"операция выбрана неоднозначно ({routes}); передайте --method и --path")
 
-    operation = candidates[0]
+    operation = routable[0]
     completed = dict(entry)
     if operation["operation_id"]:
         completed["operation_id"] = operation["operation_id"]
@@ -617,6 +656,7 @@ def _load(args: argparse.Namespace) -> tuple[Manifest, WaiverSet]:
     manifest = load_manifest(args.manifest)
     waivers = load_waivers(manifest.base_dir / manifest.waivers_path)
     waivers.validate(manifest, today=dt.date.today())
+    manifest.check_temporary_settings(today=dt.date.today())
     return manifest, waivers
 
 
@@ -629,12 +669,20 @@ def _report_waivers(manifest: Manifest, waivers: WaiverSet) -> None:
 
     Истечение — предупреждение, а не ошибка: waiver ещё действует, ронять чужую
     сборку не за что. Ошибкой оно станет в тот день, который в ``expires_at``.
+    Так же предупреждают временные настройки операций в manifest.
     """
     for waiver, covered in waivers.subtree_coverage():
         print(f"  waiver {waiver.describe()}: покрыто точек контракта — {covered}")
     expiring = waivers.expiring(today=dt.date.today(), warn_days=manifest.policies.waiver_warn_days)
     for item in expiring:
         print(f"предупреждение: waiver скоро истекает — {item.describe()}", file=sys.stderr)
+    for key, setting, days_left in manifest.expiring_temporary_settings(today=dt.date.today()):
+        when = "истекает сегодня" if days_left == 0 else f"осталось дней: {days_left}"
+        print(
+            f"предупреждение: accept_trailing_slash операции {key} скоро истекает — {when} "
+            f"(expires_at: {setting.expires_at.isoformat()}, issue: {setting.issue})",
+            file=sys.stderr,
+        )
 
 
 def _cmd_update(args: argparse.Namespace) -> int:

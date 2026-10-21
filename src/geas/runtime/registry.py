@@ -167,6 +167,7 @@ def handle_from_document(
         d42_modules=modules,
         d42_reason=d42_reason,
         d42_reasons=d42_reasons,
+        accept_trailing_slash=bool(document.get("accept_trailing_slash", False)),
     )
 
 

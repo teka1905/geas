@@ -722,3 +722,44 @@ def test_secondary_diagnostics_use_add_note_when_available() -> None:
 
     notes = getattr(primary, "__notes__", [])
     assert any("ValueError" in note for note in notes)
+
+
+async def test_mock_serves_the_final_route_behind_a_gateway(
+    jj_server: JJServer,  # noqa: F811 - фикстура
+    tmp_path: Path,
+) -> None:
+    """С ``strip_prefix`` мок и проверка маршрута работают по маршруту шлюза."""
+    project = make_project(tmp_path / "gateway", package="gateway_contracts")
+    project.write_spec("api/openapi.yaml", spec("basic", "openapi30.yaml"))
+    project.write_manifest(
+        sources={
+            "main": {"path": "api/openapi.yaml", "strip_prefix": "/api/v1", "base_path": "/gw"}
+        },
+        operations={
+            "api.createDocument": {
+                "source": "main",
+                "operation_id": "createDocument",
+                "python_path": ["api", "create_document"],
+                "d42": False,
+            },
+        },
+    )
+    project.update()
+    gateway_path = f"/gw/workspaces/{WORKSPACE_ID}/documents"
+
+    with project.importable() as module:
+        handle = module.operations.api.create_document
+        assert handle.path == "/gw/workspaces/{workspaceId}/documents"
+        async with handle.mock(
+            response=DOCUMENT,
+            status=200,
+            path_params={"workspaceId": WORKSPACE_ID},
+            wait_for_requests=1,
+        ) as mock:
+            # Маршрут спецификации мок не перехватывает: клиент ходит через шлюз.
+            assert (await send(jj_server, "POST", DOCUMENTS_PATH, json=CREATE_BODY))[0] == 404
+            status, _, _ = await send(jj_server, "POST", gateway_path, json=CREATE_BODY)
+
+    assert status == 200
+    assert mock.diagnostics == ()
+    assert [item.path for item in mock.requests] == [gateway_path]

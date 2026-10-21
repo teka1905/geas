@@ -13,6 +13,7 @@ JSON Pointer внутри него, d42-модуль, имя d42-схемы и �
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 from collections.abc import Mapping, Sequence
@@ -395,6 +396,7 @@ class OperationHandle:
     """Иммутабельная ручка одной операции контракта."""
 
     __slots__ = (
+        "_accept_trailing_slash",
         "_d42_modules",
         "_d42_reason",
         "_d42_reasons",
@@ -426,7 +428,9 @@ class OperationHandle:
         d42_modules: Mapping[str, str | None] | None = None,
         d42_reason: str | None = None,
         d42_reasons: Mapping[str, str | None] | None = None,
+        accept_trailing_slash: bool = False,
     ) -> None:
+        self._accept_trailing_slash = accept_trailing_slash
         self._key = key
         self._operation_id = operation_id
         self._method = method
@@ -462,6 +466,16 @@ class OperationHandle:
     def path(self) -> str:
         """Полный шаблон маршрута, включая префикс источника."""
         return self._path
+
+    @property
+    def accept_trailing_slash(self) -> bool:
+        """Принимается ли маршрут и с одним слэшем на конце, и без него.
+
+        Включается в manifest (``accept_trailing_slash`` источника или операции);
+        по умолчанию маршрут сопоставляется строго. ``path`` при этом остаётся в
+        форме спецификации.
+        """
+        return self._accept_trailing_slash
 
     @property
     def source(self) -> str:
@@ -701,7 +715,9 @@ class OperationHandle:
         index: int,
         pinned: Mapping[str, Any],
     ) -> None:
-        extracted = extract_path_params(self._path, path)
+        extracted = extract_path_params(
+            self._path, path, accept_trailing_slash=self._accept_trailing_slash
+        )
         if extracted is None and not segments:
             raise RequestContractError(
                 "маршрут запроса не соответствует шаблону операции",
@@ -1229,14 +1245,91 @@ def _import_d42_module(module_name: str) -> Any:
 _TEMPLATE_VARIABLE = re.compile(r"\{([^}]*)\}")
 
 
-def extract_path_params(template: str, actual: str) -> dict[str, str] | None:
+def route_variants(template: str) -> tuple[str, ...]:
+    """Формы маршрута, которые принимает операция с ``accept_trailing_slash``.
+
+    Первой идёт форма из спецификации, второй — та же с добавленным или убранным
+    одним слэшем на конце. Корень ``/`` вариантов не имеет.
+    """
+    if template in ("", "/"):
+        return (template,)
+    if template.endswith("/"):
+        return (template, template[:-1])
+    return (template, template + "/")
+
+
+@functools.lru_cache(maxsize=4096)
+def _segment_pattern(segment: str) -> re.Pattern[str]:
+    """Регэксп одного сегмента шаблона: переменные — любой непустой текст без ``/``."""
+    pattern: list[str] = []
+    position = 0
+    for match in _TEMPLATE_VARIABLE.finditer(segment):
+        pattern.append(re.escape(segment[position : match.start()]))
+        pattern.append("[^/]+")
+        position = match.end()
+    pattern.append(re.escape(segment[position:]))
+    return re.compile("".join(pattern))
+
+
+def _segment_edges(segment: str) -> tuple[str, str]:
+    """Литеральный префикс до первой переменной и суффикс после последней."""
+    return segment[: segment.index("{")], segment[segment.rindex("}") + 1 :]
+
+
+def _segments_overlap(first: str, second: str) -> bool:
+    first_templated = _TEMPLATE_VARIABLE.search(first) is not None
+    second_templated = _TEMPLATE_VARIABLE.search(second) is not None
+    if not first_templated and not second_templated:
+        return first == second
+    if first_templated and second_templated:
+        # Точное пересечение двух шаблонов не вычислить дёшево. Необходимое
+        # условие — совместимые литеральные края: путь начинается с обоих
+        # префиксов и кончается обоими суффиксами. Остальное считаем пересечением.
+        first_prefix, first_suffix = _segment_edges(first)
+        second_prefix, second_suffix = _segment_edges(second)
+        return (
+            first_prefix.startswith(second_prefix) or second_prefix.startswith(first_prefix)
+        ) and (first_suffix.endswith(second_suffix) or second_suffix.endswith(first_suffix))
+    templated, literal = (first, second) if first_templated else (second, first)
+    return _segment_pattern(templated).fullmatch(literal) is not None
+
+
+def route_templates_overlap(first: str, second: str) -> bool:
+    """Может ли один фактический путь подойти под оба шаблона маршрута.
+
+    Сравнение посегментное: литерал совпадает с равным литералом или с шаблонным
+    сегментом, который его принимает. Два шаблонных сегмента пересекаются, если
+    совместимы их литеральные края (``{id}.json`` и ``{name}.xml`` — нет).
+    """
+    first_segments = first.split("/")
+    second_segments = second.split("/")
+    if len(first_segments) != len(second_segments):
+        return False
+    return all(
+        _segments_overlap(left, right) for left, right in zip(first_segments, second_segments)
+    )
+
+
+def extract_path_params(
+    template: str, actual: str, *, accept_trailing_slash: bool = False
+) -> dict[str, str] | None:
     """Разобрать фактический путь по шаблону маршрута.
+
+    С ``accept_trailing_slash`` шаблон принимает ещё и форму с одним слэшем на
+    конце, добавленным или убранным: ``/a/b`` и ``/a/b/`` — один маршрут.
 
     Возвращает ``None``, если путь шаблону не соответствует. Имена переменных
     берутся из шаблона как есть: в реальных спецификациях они не обязаны быть
     валидными Python-идентификаторами, поэтому именованные группы не годятся.
     """
     from urllib.parse import unquote
+
+    if accept_trailing_slash:
+        for variant in route_variants(template):
+            found_params = extract_path_params(variant, actual)
+            if found_params is not None:
+                return found_params
+        return None
 
     names: list[str] = []
     pattern = ["^"]

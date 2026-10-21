@@ -24,11 +24,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .dialects.base import Dialect, detect_dialect
+from .dialects.base import Dialect, detect_dialect, source_operations
 from .errors import (
     ContractError,
     ManifestBindingError,
@@ -41,7 +41,7 @@ from .errors import (
     WaiverError,
 )
 from .jsonschema_gen import to_json_schema
-from .manifest import Manifest, NonWaivableRule, OperationSpec, Selection
+from .manifest import Manifest, NonWaivableRule, OperationSpec, Selection, SourceSpec
 from .media import MediaKind, media_kind, media_priority
 from .models import (
     AllOfNode,
@@ -81,6 +81,7 @@ from .paths import (
     is_variant_segment,
     variant_index,
 )
+from .runtime.operation import route_templates_overlap, route_variants
 from .waivers import WaiverSet
 
 __all__ = [
@@ -89,6 +90,7 @@ __all__ = [
     "BuiltOperation",
     "build_contracts",
     "resolve_contract_path",
+    "route_hint",
 ]
 
 
@@ -142,7 +144,13 @@ def build_contracts(manifest: Manifest, waivers: WaiverSet) -> BuildResult:
         )
         document = registry.entry_document()
         dialect = detect_dialect(document, source=source.name)
-        raw_operations = dialect.operations(registry, base_path=source.base_path)
+        raw_operations = source_operations(
+            dialect,
+            registry,
+            source=source.name,
+            base_path=source.base_path,
+            strip_prefix=source.strip_prefix,
+        )
         for key, spec, raw in _select(manifest, source.name, source.selection, raw_operations):
             if key in keys:
                 raise ManifestError(f"ключ операции {key!r} встречается дважды")
@@ -163,6 +171,7 @@ def build_contracts(manifest: Manifest, waivers: WaiverSet) -> BuildResult:
     waivers.check_operations_known(keys)
     waivers.assert_all_used()
     _check_python_paths(built)
+    _check_route_overlaps(built)
     return BuildResult(operations=tuple(sorted(built, key=lambda item: item.contract.key)))
 
 
@@ -189,8 +198,13 @@ def _select_explicit(
     for raw in raw_operations:
         if raw.operation_id:
             by_operation_id.setdefault(raw.operation_id, []).append(raw)
-        by_route[(raw.method, raw.path)] = raw
+        # Операция вне ``strip_prefix`` сохраняет исходный путь, и он может совпасть
+        # с итоговым маршрутом другой операции. Маршрут принадлежит той, что отображена.
+        route = (raw.method, raw.path)
+        if not raw.route_error or route not in by_route:
+            by_route[route] = raw
 
+    hint = route_hint(manifest.source(source_name))
     selected: list[tuple[str, OperationSpec | None, RawOperation]] = []
     for spec in manifest.operations:
         if spec.source != source_name:
@@ -204,10 +218,12 @@ def _select_explicit(
                     operation_key=spec.key,
                 )
             if len(candidates) > 1:
-                raw = _pick_by_route(spec, candidates, source_name)
+                raw = _pick_by_route(spec, candidates, source_name, hint=hint)
             else:
                 raw = candidates[0]
-                if spec.method and spec.path:
+                # У операции с ``route_error`` маршрута нет: подмена по маршруту
+                # заслонила бы её причину чужим «operationId изменился».
+                if spec.method and spec.path and not raw.route_error:
                     exact = by_route.get((spec.method, spec.path))
                     if exact is not None:
                         raw = exact
@@ -215,7 +231,7 @@ def _select_explicit(
             found = by_route.get((spec.method, spec.path))
             if found is None:
                 raise ManifestBindingError(
-                    f"в источнике нет операции {spec.method} {spec.path}",
+                    f"в источнике нет операции {spec.method} {spec.path}{hint}",
                     source=source_name,
                     operation_key=spec.key,
                 )
@@ -225,13 +241,23 @@ def _select_explicit(
                 f"operations.{spec.key}: укажите operation_id либо пару method+path — "
                 f"иначе операцию невозможно связать со спецификацией"
             )
-        _check_binding(spec, raw, source_name)
+        _check_binding(spec, raw, source_name, hint=hint)
         selected.append((spec.key, spec, raw))
     return selected
 
 
+def route_hint(source: SourceSpec) -> str:
+    """Подсказка для промаха по маршруту: с ``strip_prefix`` manifest хранит итоговый путь."""
+    if source.strip_prefix is None:
+        return ""
+    return (
+        f"; маршруты источника отображены sources.{source.name}.strip_prefix="
+        f"{source.strip_prefix!r} — укажите итоговый маршрут, его печатает 'geas list'"
+    )
+
+
 def _pick_by_route(
-    spec: OperationSpec, candidates: list[RawOperation], source_name: str
+    spec: OperationSpec, candidates: list[RawOperation], source_name: str, *, hint: str
 ) -> RawOperation:
     """Выбрать одну из операций с общим ``operationId`` по закреплённому маршруту.
 
@@ -247,12 +273,13 @@ def _pick_by_route(
             source=source_name,
             operation_key=spec.key,
         )
-    for candidate in candidates:
-        if (candidate.method, candidate.path) == (spec.method, spec.path):
-            return candidate
+    matching = [c for c in candidates if (c.method, c.path) == (spec.method, spec.path)]
+    if matching:
+        # Как и в ``by_route``: маршрут принадлежит операции, отображённой ``strip_prefix``.
+        return next((c for c in matching if not c.route_error), matching[0])
     raise ManifestBindingError(
         f"operationId={spec.operation_id!r} встречается несколько раз ({routes}), "
-        f"и среди этих операций нет {spec.method} {spec.path}, закреплённой в manifest",
+        f"и среди этих операций нет {spec.method} {spec.path}, закреплённой в manifest{hint}",
         source=source_name,
         operation_key=spec.key,
     )
@@ -261,6 +288,7 @@ def _pick_by_route(
 def _select_all(
     manifest: Manifest, source_name: str, raw_operations: tuple[RawOperation, ...]
 ) -> list[tuple[str, OperationSpec | None, RawOperation]]:
+    hint = route_hint(manifest.source(source_name))
     seen: dict[str, RawOperation] = {}
     selected: list[tuple[str, OperationSpec | None, RawOperation]] = []
     for raw in raw_operations:
@@ -280,6 +308,8 @@ def _select_all(
             )
         seen[raw.operation_id] = raw
         key = f"{source_name}.{raw.operation_id}"
+        if raw.route_error:
+            raise ManifestBindingError(raw.route_error, source=source_name, operation_key=key)
         spec = manifest.operation(key)
         if spec is not None and spec.source != source_name:
             raise ManifestError(
@@ -287,13 +317,19 @@ def _select_all(
                 f"{source_name!r}, из которого пришла операция"
             )
         if spec is not None:
-            _check_binding(spec, raw, source_name)
+            _check_binding(spec, raw, source_name, hint=hint)
         selected.append((key, spec, raw))
     return selected
 
 
-def _check_binding(spec: OperationSpec, raw: RawOperation, source_name: str) -> None:
-    """Проверить, что закреплённая в manifest привязка всё ещё верна."""
+def _check_binding(spec: OperationSpec, raw: RawOperation, source_name: str, *, hint: str) -> None:
+    """Проверить, что закреплённая в manifest привязка всё ещё верна.
+
+    ``hint`` дописывается к расхождению маршрута: после включения ``strip_prefix``
+    manifest часто ещё хранит исходный путь.
+    """
+    if raw.route_error:
+        raise ManifestBindingError(raw.route_error, source=source_name, operation_key=spec.key)
     if spec.operation_id and raw.operation_id != spec.operation_id:
         raise ManifestBindingError(
             f"operationId изменился: в manifest {spec.operation_id!r}, "
@@ -309,7 +345,7 @@ def _check_binding(spec: OperationSpec, raw: RawOperation, source_name: str) -> 
         )
     if spec.path and raw.path != spec.path:
         raise ManifestBindingError(
-            f"маршрут изменился: в manifest {spec.path!r}, в спецификации {raw.path!r}",
+            f"маршрут изменился: в manifest {spec.path!r}, в спецификации {raw.path!r}{hint}",
             source=source_name,
             operation_key=spec.key,
         )
@@ -353,6 +389,114 @@ def _check_python_paths(built: list[BuiltOperation]) -> None:
                 f"операция {owner!r} занимает имя {'.'.join(path)}, которое уже используется "
                 f"как namespace операцией {namespaces[path]!r}. Задайте python_path в manifest"
             )
+
+
+def _route_forms(item: BuiltOperation, *, with_setting: bool) -> tuple[str, ...]:
+    """Шаблоны маршрута, которые принимает операция — с настройкой или строго."""
+    if with_setting and item.document.get("accept_trailing_slash"):
+        return route_variants(item.contract.path)
+    return (item.contract.path,)
+
+
+def _forms_overlap(first: BuiltOperation, second: BuiltOperation, *, with_setting: bool) -> bool:
+    return any(
+        route_templates_overlap(left, right)
+        for left in _route_forms(first, with_setting=with_setting)
+        for right in _route_forms(second, with_setting=with_setting)
+    )
+
+
+def _check_route_overlaps(built: list[BuiltOperation]) -> None:
+    """Не дать ``accept_trailing_slash`` склеить две операции.
+
+    Если ``GET /x`` принимает и ``/x/``, а в спецификации есть ``GET /x/`` (или
+    ``GET /x/{id}`` и ``GET /x/new/``), мок одной операции перехватывал бы
+    запросы другой, а какая ответит, решал бы порядок регистрации. Ошибка — только
+    для пересечений, которые появились из-за настройки: те, что есть и без неё
+    (например, один маршрут под несколькими ключами manifest), — дело самой
+    спецификации. Источники проверяются вместе: все моки регистрируются на одном
+    JJ-сервере.
+    """
+    ordered = sorted(built, key=lambda entry: entry.contract.key)
+    # Префиксное дерево по сегментам всех форм маршрута: кандидаты в пары ищутся
+    # только от операций с настройкой и только по совместимым веткам, а не
+    # перебором всех пар. Точное решение по паре — в ``_check_route_pair``.
+    roots: dict[str, _RouteNode] = {}
+    for index, item in enumerate(ordered):
+        root = roots.setdefault(item.contract.method, _RouteNode())
+        for form in _route_forms(item, with_setting=True):
+            root.insert(form.split("/"), index)
+
+    pairs: set[tuple[int, int]] = set()
+    for index, item in enumerate(ordered):
+        if not item.document.get("accept_trailing_slash"):
+            continue
+        root = roots[item.contract.method]
+        for form in _route_forms(item, with_setting=True):
+            for other in root.candidates(form.split("/")):
+                if other != index:
+                    pairs.add((min(index, other), max(index, other)))
+    for first, second in sorted(pairs):
+        _check_route_pair(ordered[first], ordered[second])
+
+
+@dataclass(slots=True)
+class _RouteNode:
+    """Узел префиксного дерева маршрутов: литеральные и шаблонные сегменты."""
+
+    literal: dict[str, _RouteNode] = field(default_factory=dict)
+    templated: dict[str, _RouteNode] = field(default_factory=dict)
+    operations: set[int] = field(default_factory=set)
+
+    def insert(self, segments: list[str], operation: int) -> None:
+        node = self
+        for segment in segments:
+            children = node.templated if "{" in segment else node.literal
+            node = children.setdefault(segment, _RouteNode())
+        node.operations.add(operation)
+
+    def candidates(self, segments: list[str]) -> set[int]:
+        """Операции, чьи формы могут совпасть с ``segments`` (с запасом)."""
+        if not segments:
+            return set(self.operations)
+        head, rest = segments[0], segments[1:]
+        if "{" in head:
+            children = [*self.literal.values(), *self.templated.values()]
+        else:
+            children = list(self.templated.values())
+            if head in self.literal:
+                children.append(self.literal[head])
+        found: set[int] = set()
+        for child in children:
+            found |= child.candidates(rest)
+        return found
+
+
+def _check_route_pair(first: BuiltOperation, second: BuiltOperation) -> None:
+    # Пары собираются только от операций с настройкой, так что список не пуст.
+    enabled = [
+        item.contract.key for item in (first, second) if item.document.get("accept_trailing_slash")
+    ]
+    if not _forms_overlap(first, second, with_setting=True):
+        return
+    if _forms_overlap(first, second, with_setting=False):
+        return
+    raise ManifestError(
+        f"с accept_trailing_slash операции {first.contract.key!r} "
+        f"({first.contract.method} {first.contract.path}) и "
+        f"{second.contract.key!r} ({second.contract.method} "
+        f"{second.contract.path}) принимают один и тот же маршрут. "
+        f"Задайте accept_trailing_slash: false у "
+        f"{', '.join(repr(key) for key in enabled)}; "
+        f"у кого из них нет записи в manifest, добавьте её вручную"
+    )
+
+
+def _accepts_trailing_slash(spec: OperationSpec | None, source: SourceSpec) -> bool:
+    """Значение операции, а если его нет, — источника."""
+    if spec is not None and spec.accept_trailing_slash is not None:
+        return spec.accept_trailing_slash
+    return source.accept_trailing_slash
 
 
 # --------------------------------------------------------------- нормализация
@@ -452,6 +596,7 @@ def _build_operation(
         unchecked=tuple(unchecked),
         recursive=recursive,
         d42_enabled=spec.d42 if spec is not None else True,
+        accept_trailing_slash=_accepts_trailing_slash(spec, manifest.source(source_name)),
     )
     return BuiltOperation(
         contract=contract,
@@ -1099,6 +1244,7 @@ def _render_document(
     unchecked: tuple[UncheckedVariant, ...],
     recursive: bool,
     d42_enabled: bool,
+    accept_trailing_slash: bool,
 ) -> dict[str, Any]:
     """Канонический документ контракта — основа всех generated-артефактов."""
     slug = slugify_key(contract.key)
@@ -1160,7 +1306,7 @@ def _render_document(
         )
 
     parameter_exports = _parameter_exports(contract, pascal) if d42_enabled else {}
-    return {
+    document: dict[str, Any] = {
         "artifact": {"kind": "operation-contract", "version": 1},
         "key": contract.key,
         "slug": slug,
@@ -1185,6 +1331,11 @@ def _render_document(
             "parameters": parameter_exports,
         },
     }
+    if accept_trailing_slash:
+        # Ключ пишется только при включённой настройке: у проектов со строгим
+        # маршрутом артефакты остаются прежними байт в байт.
+        document["accept_trailing_slash"] = True
+    return document
 
 
 def _unchecked_document(unchecked: tuple[UncheckedVariant, ...]) -> dict[str, Any]:
