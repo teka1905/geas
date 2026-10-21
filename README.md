@@ -783,3 +783,17 @@ loopback для локального сервера моков. Синтетич
 `tests/fixtures/specs/`.
 
 Архитектурные решения и их обоснования — [docs/adr/](docs/adr/).
+
+### Выпуск версии
+
+1. Версия поднята в `pyproject.toml`, `geas.__version__`, README, `docs/migration.md` и
+   `uv.lock`; секция CHANGELOG названа версией и датой; артефакты `examples/consumer`
+   перегенерированы (`geas update`).
+2. На `main` создаётся GitHub Release с тегом `vX.Y.Z`.
+3. Публикация релиза запускает [`release.yml`](.github/workflows/release.yml): он сверяет
+   версию в `pyproject.toml` с тегом, собирает sdist и wheel, проверяет их `twine check` и
+   публикует в PyPI через Trusted Publishing в окружении `pypi`.
+
+Повторно опубликовать релиз (например, после того как тег перевешен на новый коммит)
+можно, переведя его в черновик и обратно: `gh release edit vX.Y.Z --draft=true`, затем
+`--draft=false`.
